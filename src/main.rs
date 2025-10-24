@@ -1,4 +1,4 @@
-use std::env;
+use clap::Parser;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -23,79 +23,25 @@ impl Bucket {
     }
 }
 
-#[derive(Debug)]
+/// Organize files by age into categorized subdirectories
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
 struct Config {
+    /// Source directory to scan for files and directories
+    #[arg(short, long)]
     source_dir: PathBuf,
+
+    /// Target directory where refile/* subdirectories will be created
+    #[arg(short, long)]
     target_dir: PathBuf,
+
+    /// Perform a dry-run without moving files
+    #[arg(short = 'n', long)]
     dry_run: bool,
 }
 
-fn usage() -> ! {
-    eprintln!(
-        "Usage: refile --source <SOURCE_DIR> --target <TARGET_DIR> [--dry-run]\n\
-         Notes:\n\
-         - Directories are moved as single units (no recursion into them).\n\
-         - Items inside TARGET_DIR/refile/* are also considered and may be moved if they aged into a new bucket.\n\
-         Examples:\n\
-         - refile --source ./inbox --target ./inbox --dry-run\n\
-         - refile --source ./downloads --target ./downloads\n"
-    );
-    std::process::exit(2);
-}
-
-fn parse_args() -> Config {
-    let mut source_dir: Option<PathBuf> = None;
-    let mut target_dir: Option<PathBuf> = None;
-    let mut dry_run = false;
-
-    let mut args = env::args().skip(1).peekable();
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--source" | "-s" => {
-                let v = args.next().unwrap_or_else(|| {
-                    eprintln!("Missing value for --source");
-                    usage()
-                });
-                source_dir = Some(PathBuf::from(v));
-            }
-            "--target" | "-t" => {
-                let v = args.next().unwrap_or_else(|| {
-                    eprintln!("Missing value for --target");
-                    usage()
-                });
-                target_dir = Some(PathBuf::from(v));
-            }
-            "--dry-run" | "-n" => dry_run = true,
-            _ => {
-                // Allow positional: refile <SOURCE_DIR> --target <TARGET_DIR> [--dry-run]
-                if source_dir.is_none() && !arg.starts_with('-') {
-                    source_dir = Some(PathBuf::from(arg));
-                } else {
-                    eprintln!("Unknown argument: {arg}");
-                    usage();
-                }
-            }
-        }
-    }
-
-    let source_dir = source_dir.unwrap_or_else(|| {
-        eprintln!("--source <SOURCE_DIR> is required");
-        usage()
-    });
-    let target_dir = target_dir.unwrap_or_else(|| {
-        eprintln!("--target <TARGET_DIR> is required");
-        usage()
-    });
-
-    Config {
-        source_dir,
-        target_dir,
-        dry_run,
-    }
-}
-
 fn main() -> io::Result<()> {
-    let cfg = parse_args();
+    let cfg = Config::parse();
 
     // Ensure target base exists (dry-run prints instead)
     let refile_base = cfg.target_dir.join("refile");
