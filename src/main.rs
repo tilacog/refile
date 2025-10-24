@@ -830,39 +830,38 @@ mod tests {
 
     #[test]
     fn test_refile_base_path() {
-        let target = PathBuf::from("/home/user/documents");
-        let base = refile_base_path(&target);
+        let base = refile_base_path(Path::new("/home/user/documents"));
         assert_eq!(base, PathBuf::from("/home/user/documents/refile"));
     }
 
     #[test]
     fn test_bucket_dest_dir() {
-        let target = PathBuf::from("/home/user/documents");
+        let target = Path::new("/home/user/documents");
 
         assert_eq!(
-            bucket_dest_dir(&target, Bucket::LastWeek),
+            bucket_dest_dir(target, Bucket::LastWeek),
             PathBuf::from("/home/user/documents/refile/last-week")
         );
         assert_eq!(
-            bucket_dest_dir(&target, Bucket::CurrentMonth),
+            bucket_dest_dir(target, Bucket::CurrentMonth),
             PathBuf::from("/home/user/documents/refile/current-month")
         );
         assert_eq!(
-            bucket_dest_dir(&target, Bucket::LastMonths),
+            bucket_dest_dir(target, Bucket::LastMonths),
             PathBuf::from("/home/user/documents/refile/last-months")
         );
         assert_eq!(
-            bucket_dest_dir(&target, Bucket::OldStuff),
+            bucket_dest_dir(target, Bucket::OldStuff),
             PathBuf::from("/home/user/documents/refile/old-stuff")
         );
     }
 
     #[test]
     fn test_compute_dest_path() {
-        let source = PathBuf::from("/home/user/documents/file.txt");
-        let target = PathBuf::from("/home/user/archive");
+        let source = Path::new("/home/user/documents/file.txt");
+        let target = Path::new("/home/user/archive");
 
-        let dest = compute_dest_path(&source, &target, Bucket::LastWeek);
+        let dest = compute_dest_path(source, target, Bucket::LastWeek);
         assert_eq!(
             dest,
             Some(PathBuf::from(
@@ -870,7 +869,7 @@ mod tests {
             ))
         );
 
-        let dest = compute_dest_path(&source, &target, Bucket::OldStuff);
+        let dest = compute_dest_path(source, target, Bucket::OldStuff);
         assert_eq!(
             dest,
             Some(PathBuf::from(
@@ -881,52 +880,49 @@ mod tests {
 
     #[test]
     fn test_compute_dest_path_no_filename() {
-        let source = PathBuf::from("/");
-        let target = PathBuf::from("/home/user/archive");
-
-        let dest = compute_dest_path(&source, &target, Bucket::LastWeek);
+        let dest = compute_dest_path(Path::new("/"), Path::new("/home/user/archive"), Bucket::LastWeek);
         assert_eq!(dest, None);
     }
 
     #[test]
     fn test_generate_unique_name_with_extension() {
-        let base = PathBuf::from("/home/user/documents/file.txt");
+        let base = Path::new("/home/user/documents/file.txt");
 
         assert_eq!(
-            generate_unique_name(&base, 1),
+            generate_unique_name(base, 1),
             PathBuf::from("/home/user/documents/file (1).txt")
         );
         assert_eq!(
-            generate_unique_name(&base, 2),
+            generate_unique_name(base, 2),
             PathBuf::from("/home/user/documents/file (2).txt")
         );
         assert_eq!(
-            generate_unique_name(&base, 42),
+            generate_unique_name(base, 42),
             PathBuf::from("/home/user/documents/file (42).txt")
         );
     }
 
     #[test]
     fn test_generate_unique_name_without_extension() {
-        let base = PathBuf::from("/home/user/documents/my-directory");
+        let base = Path::new("/home/user/documents/my-directory");
 
         assert_eq!(
-            generate_unique_name(&base, 1),
+            generate_unique_name(base, 1),
             PathBuf::from("/home/user/documents/my-directory (1)")
         );
         assert_eq!(
-            generate_unique_name(&base, 5),
+            generate_unique_name(base, 5),
             PathBuf::from("/home/user/documents/my-directory (5)")
         );
     }
 
     #[test]
     fn test_generate_unique_name_multiple_extensions() {
-        let base = PathBuf::from("/home/user/archive.tar.gz");
+        let base = Path::new("/home/user/archive.tar.gz");
 
         // Should only use the last extension
         assert_eq!(
-            generate_unique_name(&base, 1),
+            generate_unique_name(base, 1),
             PathBuf::from("/home/user/archive.tar (1).gz")
         );
     }
@@ -939,11 +935,9 @@ mod tests {
         assert!(is_bucket_dir("/home/user/refile/last-months"));
         assert!(is_bucket_dir("/home/user/refile/old-stuff"));
 
-        // Valid bucket directories - using PathBuf
-        assert!(is_bucket_dir(&PathBuf::from(
-            "/var/archive/refile/last-week"
-        )));
-        assert!(is_bucket_dir(&PathBuf::from("/tmp/refile/old-stuff")));
+        // Valid bucket directories - different paths
+        assert!(is_bucket_dir("/var/archive/refile/last-week"));
+        assert!(is_bucket_dir("/tmp/refile/old-stuff"));
 
         // Invalid - parent not named "refile"
         assert!(!is_bucket_dir("/home/user/documents/last-week"));
@@ -981,26 +975,24 @@ mod tests {
 
     #[test]
     fn test_paths_equal_same_path() {
-        let path = PathBuf::from("/tmp/test.txt");
-        assert!(paths_equal(&path, &path));
+        let path = Path::new("/tmp/test.txt");
+        assert!(paths_equal(path, path));
     }
 
     #[test]
     fn test_paths_equal_different_paths() {
-        let path1 = PathBuf::from("/tmp/test1.txt");
-        let path2 = PathBuf::from("/tmp/test2.txt");
-        assert!(!paths_equal(&path1, &path2));
+        assert!(!paths_equal(Path::new("/tmp/test1.txt"), Path::new("/tmp/test2.txt")));
     }
 
     #[test]
     fn test_paths_equal_nonexistent() {
         // Should still compare correctly even if paths don't exist
-        let path1 = PathBuf::from("/nonexistent/path1");
-        let path2 = PathBuf::from("/nonexistent/path2");
-        assert!(!paths_equal(&path1, &path2));
+        let path1 = Path::new("/nonexistent/path1");
+        let path2 = Path::new("/nonexistent/path2");
+        assert!(!paths_equal(path1, path2));
 
-        let path3 = PathBuf::from("/nonexistent/path1");
-        assert!(paths_equal(&path1, &path3));
+        let path3 = Path::new("/nonexistent/path1");
+        assert!(paths_equal(path1, path3));
     }
 
     #[test]
