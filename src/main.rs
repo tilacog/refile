@@ -139,7 +139,8 @@ fn is_protected_directory(path: &Path) -> bool {
 
     // Check if it's the user's home directory
     if let Ok(home) = env::var("HOME") {
-        let canonical_home = fs::canonicalize(home).unwrap_or_else(|e| PathBuf::from(e.to_string()));
+        let canonical_home =
+            fs::canonicalize(home).unwrap_or_else(|e| PathBuf::from(e.to_string()));
         if canonical == canonical_home {
             return true;
         }
