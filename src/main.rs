@@ -891,13 +891,17 @@ mod tests {
         let dest = compute_dest_path(&source, &target, Bucket::LastWeek);
         assert_eq!(
             dest,
-            Some(PathBuf::from("/home/user/archive/refile/last-week/file.txt"))
+            Some(PathBuf::from(
+                "/home/user/archive/refile/last-week/file.txt"
+            ))
         );
 
         let dest = compute_dest_path(&source, &target, Bucket::OldStuff);
         assert_eq!(
             dest,
-            Some(PathBuf::from("/home/user/archive/refile/old-stuff/file.txt"))
+            Some(PathBuf::from(
+                "/home/user/archive/refile/old-stuff/file.txt"
+            ))
         );
     }
 
@@ -962,7 +966,9 @@ mod tests {
         assert!(is_bucket_dir("/home/user/refile/old-stuff"));
 
         // Valid bucket directories - using PathBuf
-        assert!(is_bucket_dir(&PathBuf::from("/var/archive/refile/last-week")));
+        assert!(is_bucket_dir(&PathBuf::from(
+            "/var/archive/refile/last-week"
+        )));
         assert!(is_bucket_dir(&PathBuf::from("/tmp/refile/old-stuff")));
 
         // Invalid - parent not named "refile"
