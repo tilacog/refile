@@ -148,9 +148,10 @@ fn is_protected_directory(path: &Path) -> bool {
 
     // Check if this is a top-level directory (direct child of root)
     if let Some(parent) = canonical.parent()
-        && parent == Path::new("/") {
-            return true;
-        }
+        && parent == Path::new("/")
+    {
+        return true;
+    }
 
     false
 }
