@@ -1,4 +1,5 @@
 use clap::Parser;
+use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -112,6 +113,47 @@ fn main() -> io::Result<()> {
 // ============================================================================
 // Pure functions - no IO
 // ============================================================================
+
+/// Checks if a path is a protected directory that should not be moved.
+///
+/// Protected directories include:
+/// - Root directory (`/`)
+/// - User's home directory (detected via HOME env var)
+/// - Top-level directories (direct children of root, e.g., `/tmp`, `/var`, `/usr`)
+///
+/// # Arguments
+///
+/// * `path` - The path to check
+///
+/// # Returns
+///
+/// `true` if the path is a protected directory
+fn is_protected_directory(path: &Path) -> bool {
+    // Canonicalize the path if possible for accurate comparison
+    let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+
+    // Check if it's root
+    if canonical == Path::new("/") {
+        return true;
+    }
+
+    // Check if it's the user's home directory
+    if let Ok(home) = env::var("HOME") {
+        let canonical_home = fs::canonicalize(home).unwrap_or_else(|e| PathBuf::from(e.to_string()));
+        if canonical == canonical_home {
+            return true;
+        }
+    }
+
+    // Check if this is a top-level directory (direct child of root)
+    if let Some(parent) = canonical.parent() {
+        if parent == Path::new("/") {
+            return true;
+        }
+    }
+
+    false
+}
 
 /// Determines which bucket a file belongs to based on its age.
 ///
@@ -459,11 +501,12 @@ fn collect_items_to_process(source_dir: &Path, refile_base: &Path) -> io::Result
 /// Plans the appropriate action for a single file or directory.
 ///
 /// This function:
-/// 1. Reads the item's age from its metadata
-/// 2. Determines the appropriate bucket
-/// 3. Computes the destination path
-/// 4. Checks for conflicts and handles them based on configuration
-/// 5. Returns a `FileAction` describing what should be done
+/// 1. Checks if the path is a protected directory
+/// 2. Reads the item's age from its metadata
+/// 3. Determines the appropriate bucket
+/// 4. Computes the destination path
+/// 5. Checks for conflicts and handles them based on configuration
+/// 6. Returns a `FileAction` describing what should be done
 ///
 /// # Arguments
 ///
@@ -479,10 +522,23 @@ fn collect_items_to_process(source_dir: &Path, refile_base: &Path) -> io::Result
 /// # Errors
 ///
 /// Returns an error if:
+/// - The path is a protected directory (root or home)
 /// - File metadata cannot be read
 /// - A conflict exists and `allow_rename` is false
 /// - No unique destination can be found when `allow_rename` is true
 fn plan_action(path: &Path, cfg: &Config) -> io::Result<Option<FileAction>> {
+    // Check if this is a protected directory
+    if is_protected_directory(path) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "Refusing to move protected directory: {}. \
+                 Protected directories include: root (/), user home, and top-level directories (/tmp, /var, /usr, etc.).",
+                path.display()
+            ),
+        ));
+    }
+
     // Get file age
     let age = match get_file_age(path) {
         Ok(a) => a,
@@ -944,5 +1000,36 @@ mod tests {
 
         let path3 = PathBuf::from("/nonexistent/path1");
         assert!(paths_equal(&path1, &path3));
+    }
+
+    #[test]
+    fn test_is_protected_directory_root() {
+        // Root directory should be protected
+        assert!(is_protected_directory(Path::new("/")));
+    }
+
+    #[test]
+    fn test_is_protected_directory_home() {
+        // Home directory should be protected if HOME is set
+        if let Ok(home) = env::var("HOME") {
+            assert!(is_protected_directory(Path::new(&home)));
+        }
+    }
+
+    #[test]
+    fn test_is_protected_directory_top_level() {
+        // Top-level directories (direct children of root) should be protected
+        assert!(is_protected_directory(Path::new("/tmp")));
+        assert!(is_protected_directory(Path::new("/var")));
+        assert!(is_protected_directory(Path::new("/usr")));
+        assert!(is_protected_directory(Path::new("/etc")));
+    }
+
+    #[test]
+    fn test_is_protected_directory_subdirs_not_protected() {
+        // Subdirectories of top-level dirs should NOT be protected
+        assert!(!is_protected_directory(Path::new("/tmp/random")));
+        assert!(!is_protected_directory(Path::new("/var/log")));
+        assert!(!is_protected_directory(Path::new("/usr/local")));
     }
 }
