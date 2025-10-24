@@ -18,16 +18,16 @@ Directories are moved as whole units, not recursed into.
 
 ## Example
 
-```bash
-refile --source ~/downloads --target ~/downloads
-```
-
 **Before:**
 ```
 ~/downloads/
 ├── report.pdf (2 days old)
 ├── vacation.jpg (15 days old)
 └── old-backup.tar (100 days old)
+```
+
+```bash
+$ refile --source ~/downloads --target ~/downloads
 ```
 
 **After:**
@@ -43,6 +43,8 @@ refile --source ~/downloads --target ~/downloads
 
 - `--dry-run` - Preview actions without moving files
 - `--allow-rename` - Rename files on conflict (default: abort)
+
+Running refile repeatedly will refile items again based on their current age.
 
 ## Safety
 
