@@ -54,6 +54,10 @@ struct Config {
     /// Allow renaming files to avoid conflicts (default: abort on conflict)
     #[arg(short = 'r', long, default_value_t = false)]
     allow_rename: bool,
+
+    /// Allow moving protected directories (root, home, top-level directories) - USE WITH EXTREME CAUTION
+    #[arg(long, default_value_t = false)]
+    allow_dangerous_directories: bool,
 }
 
 #[derive(Debug)]
@@ -82,6 +86,17 @@ enum FileAction {
 fn main() -> io::Result<()> {
     let cfg = Config::parse();
     let target_dir = cfg.target_dir.as_ref().unwrap_or(&cfg.source_dir);
+
+    // Warn about dangerous directories flag
+    if cfg.allow_dangerous_directories {
+        println!("WARNING: --allow-dangerous-directories is enabled!");
+        println!("This allows moving protected directories including:");
+        println!("  - Root directory (/)");
+        println!("  - Your home directory");
+        println!("  - Top-level system directories (/tmp, /var, /usr, etc.)");
+        println!("This can cause SEVERE SYSTEM DAMAGE. Use with extreme caution!");
+        println!();
+    }
 
     let refile_base = refile_base_path(target_dir);
 
@@ -522,13 +537,13 @@ fn collect_items_to_process(source_dir: &Path, refile_base: &Path) -> io::Result
 /// # Errors
 ///
 /// Returns an error if:
-/// - The path is a protected directory (root or home)
+/// - The path is a protected directory (root or home) and `allow_dangerous_directories` is false
 /// - File metadata cannot be read
 /// - A conflict exists and `allow_rename` is false
 /// - No unique destination can be found when `allow_rename` is true
 fn plan_action(path: &Path, target_dir: &Path, cfg: &Config) -> io::Result<Option<FileAction>> {
     // Check if this is a protected directory
-    if is_protected_directory(path) {
+    if is_protected_directory(path) && !cfg.allow_dangerous_directories {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
@@ -1030,5 +1045,99 @@ mod tests {
         assert!(!is_protected_directory(Path::new("/tmp/random")));
         assert!(!is_protected_directory(Path::new("/var/log")));
         assert!(!is_protected_directory(Path::new("/usr/local")));
+    }
+
+    #[test]
+    fn test_plan_action_rejects_protected_dir_by_default() {
+        // Test that protected directories are rejected when allow_dangerous_directories is false
+        let cfg = Config {
+            source_dir: PathBuf::from("/tmp"),
+            target_dir: None,
+            dry_run: false,
+            allow_rename: false,
+            allow_dangerous_directories: false,
+        };
+
+        let target = Path::new("/tmp");
+        let protected_path = Path::new("/tmp"); // /tmp is a protected top-level directory
+
+        // This should return an error because /tmp is protected and flag is false
+        let result = plan_action(protected_path, target, &cfg);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn test_plan_action_allows_protected_dir_with_flag() {
+        // Test that protected directories are allowed when allow_dangerous_directories is true
+        let cfg = Config {
+            source_dir: PathBuf::from("/tmp"),
+            target_dir: None,
+            dry_run: false,
+            allow_rename: false,
+            allow_dangerous_directories: true,
+        };
+
+        let target = Path::new("/tmp");
+        let protected_path = Path::new("/tmp");
+
+        // This should NOT return a permission denied error because the flag is true
+        // It may return other errors or succeed, but NOT PermissionDenied for protected dir
+        let result = plan_action(protected_path, target, &cfg);
+
+        // If there's an error, it should not be PermissionDenied
+        if let Err(e) = result {
+            assert_ne!(
+                e.kind(),
+                io::ErrorKind::PermissionDenied,
+                "Should not reject protected directory when allow_dangerous_directories is true"
+            );
+        }
+    }
+
+    #[test]
+    fn test_plan_action_allows_nonprotected_dirs_regardless_of_flag() {
+        // Test that non-protected directories work with both flag values
+        let cfg_false = Config {
+            source_dir: PathBuf::from("/tmp/test"),
+            target_dir: None,
+            dry_run: false,
+            allow_rename: false,
+            allow_dangerous_directories: false,
+        };
+
+        let cfg_true = Config {
+            source_dir: PathBuf::from("/tmp/test"),
+            target_dir: None,
+            dry_run: false,
+            allow_rename: false,
+            allow_dangerous_directories: true,
+        };
+
+        // Create a test path that is NOT protected
+        let non_protected = Path::new("/tmp/test/some-dir");
+        let target = Path::new("/tmp/test");
+
+        // Both should NOT return PermissionDenied for protected directories
+        // (they may fail for other reasons like file not found, but not for being protected)
+        let result_false = plan_action(non_protected, target, &cfg_false);
+        let result_true = plan_action(non_protected, target, &cfg_true);
+
+        // Neither should fail with PermissionDenied for protected directory
+        if let Err(e) = result_false {
+            assert_ne!(
+                e.kind(),
+                io::ErrorKind::PermissionDenied,
+                "Non-protected directory should not be rejected"
+            );
+        }
+
+        if let Err(e) = result_true {
+            assert_ne!(
+                e.kind(),
+                io::ErrorKind::PermissionDenied,
+                "Non-protected directory should not be rejected"
+            );
+        }
     }
 }
