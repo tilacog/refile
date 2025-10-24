@@ -21,7 +21,7 @@ impl Bucket {
     /// # use refile::Bucket;
     /// assert_eq!(Bucket::LastWeek.dir_name(), "last-week");
     /// ```
-    fn dir_name(&self) -> &'static str {
+    fn dir_name(self) -> &'static str {
         match self {
             Bucket::LastWeek => "last-week",
             Bucket::CurrentMonth => "current-month",
@@ -281,7 +281,7 @@ fn generate_unique_name(base: &Path, suffix: usize) -> PathBuf {
 ///
 /// # Arguments
 ///
-/// * `path` - The full path to check (can be &Path, &PathBuf, &str, etc.)
+/// * `path` - The full path to check (can be &Path, &`PathBuf`, &str, etc.)
 ///
 /// # Returns
 ///
@@ -303,14 +303,12 @@ fn is_bucket_dir<P: AsRef<Path>>(path: P) -> bool {
     let path = path.as_ref();
 
     // Check if parent directory is named "refile"
-    let parent = match path.parent() {
-        Some(p) => p,
-        None => return false,
+    let Some(parent) = path.parent() else {
+        return false;
     };
 
-    let parent_name = match parent.file_name().and_then(|s| s.to_str()) {
-        Some(name) => name,
-        None => return false,
+    let Some(parent_name) = parent.file_name().and_then(|s| s.to_str()) else {
+        return false;
     };
 
     if parent_name != "refile" {
@@ -318,9 +316,8 @@ fn is_bucket_dir<P: AsRef<Path>>(path: P) -> bool {
     }
 
     // Check if the directory name is a bucket name
-    let dir_name = match path.file_name().and_then(|s| s.to_str()) {
-        Some(name) => name,
-        None => return false,
+    let Some(dir_name) = path.file_name().and_then(|s| s.to_str()) else {
+        return false;
     };
 
     matches!(
@@ -520,7 +517,7 @@ fn collect_items_to_process(source_dir: &Path, refile_base: &Path) -> io::Result
                 let p = child.path();
 
                 if p.is_dir() {
-                    if is_bucket_dior(&p) {
+                    if is_bucket_dir(&p) {
                         // Process items inside bucket directories
                         for item in fs::read_dir(&p)? {
                             items.push(item?.path());
@@ -584,14 +581,11 @@ fn plan_action(path: &Path, cfg: &Config) -> io::Result<Option<FileAction>> {
     let bucket = pick_bucket(age);
 
     // Compute destination path (pure)
-    let dest_path = match compute_dest_path(path, &cfg.target_dir, bucket) {
-        Some(p) => p,
-        None => {
-            return Ok(Some(FileAction::Skip {
-                path: path.to_path_buf(),
-                reason: "no file name".to_string(),
-            }));
-        }
+    let Some(dest_path) = compute_dest_path(path, &cfg.target_dir, bucket) else {
+        return Ok(Some(FileAction::Skip {
+            path: path.to_path_buf(),
+            reason: "no file name".to_string(),
+        }));
     };
 
     // Check if source and destination are the same
@@ -661,13 +655,13 @@ fn execute_action(action: FileAction, dry_run: bool) -> io::Result<()> {
 
             // Try atomic rename first
             match fs::rename(&from, &to) {
-                Ok(_) => {
+                Ok(()) => {
                     println!("Moved {} -> {}", from.display(), to.display());
                     Ok(())
                 }
                 Err(rename_err) => {
                     // Cross-filesystem move: copy then delete
-                    move_cross_filesystem(&from, &to, rename_err)
+                    move_cross_filesystem(&from, &to, &rename_err)
                 }
             }
         }
@@ -693,10 +687,10 @@ fn execute_action(action: FileAction, dry_run: bool) -> io::Result<()> {
 /// Returns an error if:
 /// - Copying fails
 /// - Removing the source fails (after successful copy)
-fn move_cross_filesystem(from: &Path, to: &Path, rename_err: io::Error) -> io::Result<()> {
+fn move_cross_filesystem(from: &Path, to: &Path, rename_err: &io::Error) -> io::Result<()> {
     if from.is_dir() {
         match copy_dir_recursive(from, to) {
-            Ok(_) => {
+            Ok(()) => {
                 if let Err(e) = fs::remove_dir_all(from) {
                     eprintln!(
                         "Copied but failed to remove source dir {}: {e}",
@@ -720,7 +714,7 @@ fn move_cross_filesystem(from: &Path, to: &Path, rename_err: io::Error) -> io::R
         }
     } else {
         match fs::copy(from, to) {
-            Ok(_) => {
+            Ok(_bytes) => {
                 if let Err(e) = fs::remove_file(from) {
                     eprintln!(
                         "Copied but failed to remove source file {}: {e}",
