@@ -880,7 +880,11 @@ mod tests {
 
     #[test]
     fn test_compute_dest_path_no_filename() {
-        let dest = compute_dest_path(Path::new("/"), Path::new("/home/user/archive"), Bucket::LastWeek);
+        let dest = compute_dest_path(
+            Path::new("/"),
+            Path::new("/home/user/archive"),
+            Bucket::LastWeek,
+        );
         assert_eq!(dest, None);
     }
 
@@ -981,7 +985,10 @@ mod tests {
 
     #[test]
     fn test_paths_equal_different_paths() {
-        assert!(!paths_equal(Path::new("/tmp/test1.txt"), Path::new("/tmp/test2.txt")));
+        assert!(!paths_equal(
+            Path::new("/tmp/test1.txt"),
+            Path::new("/tmp/test2.txt")
+        ));
     }
 
     #[test]
