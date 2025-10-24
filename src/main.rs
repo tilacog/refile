@@ -45,9 +45,9 @@ struct Config {
     #[arg(short, long)]
     source_dir: PathBuf,
 
-    /// Target directory where refile/* subdirectories will be created
+    /// Target directory where refile/* subdirectories will be created (defaults to `source_dir`)
     #[arg(short, long)]
-    target_dir: PathBuf,
+    target_dir: Option<PathBuf>,
 
     /// Perform a dry-run without moving files
     #[arg(short = 'n', long)]
@@ -83,8 +83,9 @@ enum FileAction {
 /// - File operations fail
 fn main() -> io::Result<()> {
     let cfg = Config::parse();
+    let target_dir = cfg.target_dir.as_ref().unwrap_or(&cfg.source_dir);
 
-    let refile_base = refile_base_path(&cfg.target_dir);
+    let refile_base = refile_base_path(target_dir);
 
     // Ensure destination directories exist
     if cfg.dry_run {
@@ -99,7 +100,7 @@ fn main() -> io::Result<()> {
     // Plan actions for each item
     let actions: Vec<_> = items
         .into_iter()
-        .filter_map(|path| plan_action(&path, &cfg).transpose())
+        .filter_map(|path| plan_action(&path, target_dir, &cfg).transpose())
         .collect::<io::Result<_>>()?;
 
     // Execute actions
@@ -527,7 +528,7 @@ fn collect_items_to_process(source_dir: &Path, refile_base: &Path) -> io::Result
 /// - File metadata cannot be read
 /// - A conflict exists and `allow_rename` is false
 /// - No unique destination can be found when `allow_rename` is true
-fn plan_action(path: &Path, cfg: &Config) -> io::Result<Option<FileAction>> {
+fn plan_action(path: &Path, target_dir: &Path, cfg: &Config) -> io::Result<Option<FileAction>> {
     // Check if this is a protected directory
     if is_protected_directory(path) {
         return Err(io::Error::new(
@@ -555,7 +556,7 @@ fn plan_action(path: &Path, cfg: &Config) -> io::Result<Option<FileAction>> {
     let bucket = pick_bucket(age);
 
     // Compute destination path (pure)
-    let Some(dest_path) = compute_dest_path(path, &cfg.target_dir, bucket) else {
+    let Some(dest_path) = compute_dest_path(path, target_dir, bucket) else {
         return Ok(Some(FileAction::Skip {
             path: path.to_path_buf(),
             reason: "no file name".to_string(),

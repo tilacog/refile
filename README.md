@@ -5,10 +5,10 @@ Automatically organize files by age into time-based buckets.
 ## Usage
 
 ```bash
-refile --source /path/to/scan --target /path/to/organize
+refile --source /path/to/scan [--target /path/to/organize]
 ```
 
-Files and directories are moved into `target/refile/` based on their age:
+Files and directories are moved into `target/refile/` based on their age (defaults to source if target not specified):
 - `last-week/` - 0-7 days old
 - `current-month/` - 8-28 days old
 - `last-months/` - 29-92 days old
@@ -27,7 +27,7 @@ Directories are moved as whole units, not recursed into.
 ```
 
 ```bash
-$ refile --source ~/downloads --target ~/downloads
+$ refile --source ~/downloads
 ```
 
 **After:**
