@@ -4,10 +4,6 @@ Automatically organize files by age into time-based buckets.
 
 ## Usage
 
-```bash
-refile <SOURCE_DIR> [TARGET_DIR]
-```
-
 ```
 Organize files by age into categorized subdirectories
 
@@ -18,19 +14,20 @@ Arguments:
   [TARGET_DIR]  Target directory where refile/* subdirectories will be created (defaults to `source_dir`)
 
 Options:
-  -n, --dry-run       Perform a dry-run without moving files
-  -r, --allow-rename  Allow renaming files to avoid conflicts (default: abort on conflict)
-  -h, --help          Print help
-  -V, --version       Print version
+  -n, --dry-run                      Perform a dry-run without moving files
+  -r, --allow-rename                 Allow renaming files to avoid conflicts (default: abort on conflict)
+      --allow-dangerous-directories  Allow moving protected directories (root, home, top-level directories) - USE WITH EXTREME CAUTION
+  -h, --help                         Print help
+  -V, --version                      Print version
 ```
 
-Files and directories are moved into `target/refile/` based on their age (defaults to source if target not specified):
-- `last-week/` - 0-7 days old
-- `current-month/` - 8-28 days old
-- `last-months/` - 29-92 days old
-- `old-stuff/` - 93+ days old
-
-Directories are moved as whole units, not recursed into.
+- Files and directories are moved into `target/refile/` based on their age (defaults to source if target not specified):
+  - `last-week/` - 0-7 days old
+  - `current-month/` - 8-28 days old
+  - `last-months/` - 29-92 days old
+  - `old-stuff/` - 93+ days old
+- Directories are moved as whole units, not recursed into.
+- Running `refile` repeatedly will refile items again based on their current age.
 
 ## Example
 
@@ -55,8 +52,9 @@ $ refile ~/downloads
     └── old-stuff/old-backup.tar
 ```
 
-Running refile repeatedly will refile items again based on their current age.
 
 ## Safety
 
-Protected directories (root, home, top-level) cannot be moved.
+Protected directories (root `/`, home directory, and top-level directories like `/tmp`, `/var`, `/usr`) cannot be moved by default. This protection prevents accidental system damage.
+
+**Warning**: The `--allow-dangerous-directories` flag can bypass this protection, but doing so can cause severe system damage. Only use this flag if you fully understand the consequences and have verified your source and target directories.
