@@ -14,13 +14,6 @@ enum Bucket {
 
 impl Bucket {
     /// Returns the directory name for this bucket.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use refile::Bucket;
-    /// assert_eq!(Bucket::LastWeek.dir_name(), "last-week");
-    /// ```
     fn dir_name(self) -> &'static str {
         match self {
             Bucket::LastWeek => "last-week",
@@ -132,15 +125,6 @@ fn main() -> io::Result<()> {
 /// # Arguments
 ///
 /// * `age` - The duration since the file was last modified
-///
-/// # Examples
-///
-/// ```
-/// # use std::time::Duration;
-/// # use refile::{pick_bucket, Bucket};
-/// assert_eq!(pick_bucket(Duration::from_secs(3 * 24 * 3600)), Bucket::LastWeek);
-/// assert_eq!(pick_bucket(Duration::from_secs(100 * 24 * 3600)), Bucket::OldStuff);
-/// ```
 fn pick_bucket(age: Duration) -> Bucket {
     const WEEK: Duration = Duration::from_secs(7 * 24 * 3600);
     const MONTH: Duration = Duration::from_secs(28 * 24 * 3600);
@@ -166,15 +150,6 @@ fn pick_bucket(age: Duration) -> Bucket {
 /// # Returns
 ///
 /// Path to `<target_dir>/refile`
-///
-/// # Examples
-///
-/// ```
-/// # use std::path::PathBuf;
-/// # use refile::refile_base_path;
-/// let target = PathBuf::from("/home/user/documents");
-/// assert_eq!(refile_base_path(&target), PathBuf::from("/home/user/documents/refile"));
-/// ```
 fn refile_base_path(target_dir: &Path) -> PathBuf {
     target_dir.join("refile")
 }
@@ -189,18 +164,6 @@ fn refile_base_path(target_dir: &Path) -> PathBuf {
 /// # Returns
 ///
 /// Path to `<target_dir>/refile/<bucket_name>`
-///
-/// # Examples
-///
-/// ```
-/// # use std::path::PathBuf;
-/// # use refile::{bucket_dest_dir, Bucket};
-/// let target = PathBuf::from("/archive");
-/// assert_eq!(
-///     bucket_dest_dir(&target, Bucket::LastWeek),
-///     PathBuf::from("/archive/refile/last-week")
-/// );
-/// ```
 fn bucket_dest_dir(target_dir: &Path, bucket: Bucket) -> PathBuf {
     refile_base_path(target_dir).join(bucket.dir_name())
 }
@@ -216,17 +179,6 @@ fn bucket_dest_dir(target_dir: &Path, bucket: Bucket) -> PathBuf {
 /// # Returns
 ///
 /// `Some(PathBuf)` with the full destination path, or `None` if the source has no filename
-///
-/// # Examples
-///
-/// ```
-/// # use std::path::PathBuf;
-/// # use refile::{compute_dest_path, Bucket};
-/// let source = PathBuf::from("/home/user/file.txt");
-/// let target = PathBuf::from("/archive");
-/// let dest = compute_dest_path(&source, &target, Bucket::OldStuff);
-/// assert_eq!(dest, Some(PathBuf::from("/archive/refile/old-stuff/file.txt")));
-/// ```
 fn compute_dest_path(source: &Path, target_dir: &Path, bucket: Bucket) -> Option<PathBuf> {
     let file_name = source.file_name()?;
     let dest_dir = bucket_dest_dir(target_dir, bucket);
@@ -245,18 +197,6 @@ fn compute_dest_path(source: &Path, target_dir: &Path, bucket: Bucket) -> Option
 /// # Returns
 ///
 /// A new path with the suffix inserted: `filename (N).ext` or `filename (N)`
-///
-/// # Examples
-///
-/// ```
-/// # use std::path::PathBuf;
-/// # use refile::generate_unique_name;
-/// let base = PathBuf::from("/tmp/file.txt");
-/// assert_eq!(generate_unique_name(&base, 1), PathBuf::from("/tmp/file (1).txt"));
-///
-/// let no_ext = PathBuf::from("/tmp/directory");
-/// assert_eq!(generate_unique_name(&no_ext, 5), PathBuf::from("/tmp/directory (5)"));
-/// ```
 fn generate_unique_name(base: &Path, suffix: usize) -> PathBuf {
     let parent = base.parent().unwrap_or_else(|| Path::new("."));
     let stem = base
@@ -286,19 +226,6 @@ fn generate_unique_name(base: &Path, suffix: usize) -> PathBuf {
 /// # Returns
 ///
 /// `true` if the path is a valid bucket directory
-///
-/// # Examples
-///
-/// ```
-/// # use refile::is_bucket_dir;
-/// // Works with PathBuf
-/// assert!(is_bucket_dir("/home/user/refile/last-week"));
-///
-/// // Works with string slices
-/// assert!(!is_bucket_dir("/home/user/documents/last-week")); // parent not named "refile"
-///
-/// assert!(!is_bucket_dir("/home/user/refile/random-dir")); // not a bucket name
-/// ```
 fn is_bucket_dir<P: AsRef<Path>>(path: P) -> bool {
     let path = path.as_ref();
 
@@ -342,16 +269,6 @@ fn is_bucket_dir<P: AsRef<Path>>(path: P) -> bool {
 /// # Returns
 ///
 /// `true` if the paths refer to the same location
-///
-/// # Examples
-///
-/// ```
-/// # use std::path::PathBuf;
-/// # use refile::paths_equal;
-/// let path1 = PathBuf::from("/tmp/test.txt");
-/// let path2 = PathBuf::from("/tmp/test.txt");
-/// assert!(paths_equal(&path1, &path2));
-/// ```
 fn paths_equal(a: &Path, b: &Path) -> bool {
     // Try canonical comparison first
     if let (Ok(ca), Ok(cb)) = (fs::canonicalize(a), fs::canonicalize(b)) {
