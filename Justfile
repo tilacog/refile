@@ -1,8 +1,8 @@
 # Run all CI checks
-ci: fmt check clippy test
+ci: fmt-check check clippy test
 
 # Check code formatting
-fmt:
+fmt-check:
     cargo fmt --all -- --check
 
 # Check compilation with warnings as errors

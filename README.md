@@ -18,6 +18,10 @@ Directories are moved as whole units, not recursed into.
 
 ## Example
 
+```bash
+refile --source ~/downloads --target ~/downloads
+```
+
 **Before:**
 ```
 ~/downloads/
