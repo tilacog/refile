@@ -1,6 +1,11 @@
 # Run all CI checks
 ci: fmt-check check clippy test
 
+# Fix clippy warnings and format code
+fix:
+    cargo clippy --all-targets --all-features --fix --allow-dirty --allow-staged -- -W clippy::pedantic
+    cargo fmt --all
+
 # Check code formatting
 fmt-check:
     cargo fmt --all -- --check
