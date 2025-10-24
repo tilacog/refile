@@ -42,11 +42,9 @@ impl Bucket {
 #[command(version, about, long_about = None)]
 struct Config {
     /// Source directory to scan for files and directories
-    #[arg(short, long)]
     source_dir: PathBuf,
 
     /// Target directory where refile/* subdirectories will be created (defaults to `source_dir`)
-    #[arg(short, long)]
     target_dir: Option<PathBuf>,
 
     /// Perform a dry-run without moving files

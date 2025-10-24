@@ -5,7 +5,23 @@ Automatically organize files by age into time-based buckets.
 ## Usage
 
 ```bash
-refile --source /path/to/scan [--target /path/to/organize]
+refile <SOURCE_DIR> [TARGET_DIR]
+```
+
+```
+Organize files by age into categorized subdirectories
+
+Usage: refile [OPTIONS] <SOURCE_DIR> [TARGET_DIR]
+
+Arguments:
+  <SOURCE_DIR>  Source directory to scan for files and directories
+  [TARGET_DIR]  Target directory where refile/* subdirectories will be created (defaults to `source_dir`)
+
+Options:
+  -n, --dry-run       Perform a dry-run without moving files
+  -r, --allow-rename  Allow renaming files to avoid conflicts (default: abort on conflict)
+  -h, --help          Print help
+  -V, --version       Print version
 ```
 
 Files and directories are moved into `target/refile/` based on their age (defaults to source if target not specified):
@@ -27,7 +43,7 @@ Directories are moved as whole units, not recursed into.
 ```
 
 ```bash
-$ refile --source ~/downloads
+$ refile ~/downloads
 ```
 
 **After:**
@@ -38,11 +54,6 @@ $ refile --source ~/downloads
     ├── current-month/vacation.jpg
     └── old-stuff/old-backup.tar
 ```
-
-## Options
-
-- `--dry-run` - Preview actions without moving files
-- `--allow-rename` - Rename files on conflict (default: abort)
 
 Running refile repeatedly will refile items again based on their current age.
 
