@@ -35,6 +35,27 @@ Files and directories are moved into `target/refile/` based on their age (defaul
 
 ## Configuration
 
+### Configuration Management
+
+Refile provides convenient commands to manage your configuration file:
+
+```bash
+# Create a default configuration file
+refile config init
+
+# Overwrite existing configuration (use with caution)
+refile config init --force
+
+# Print example configuration to stdout (useful for piping)
+refile config dump
+
+# Show where the config file is located
+refile config path
+
+# Validate your configuration file
+refile config validate
+```
+
 ### Configuration File
 
 You can customize bucket behavior via a configuration file at `~/.config/refile/config.toml`:

@@ -1,0 +1,168 @@
+# Refile Configuration File
+#
+# This is an example configuration file for refile, a CLI tool that organizes
+# files into age-based buckets based on their modification time.
+#
+# Location: ~/.config/refile/config.toml
+#
+# Generate this file with: refile --init
+
+# =============================================================================
+# CONFIGURATION PRECEDENCE (highest to lowest priority)
+# =============================================================================
+# 1. CLI arguments (--base-folder, --buckets)
+# 2. Directory-specific rules from this config file
+# 3. [default] section from this config file
+# 4. Built-in defaults
+#
+# This means CLI arguments always win, followed by matching rules, then
+# the default section, and finally the built-in defaults if nothing else is set.
+
+# =============================================================================
+# DEFAULT CONFIGURATION
+# =============================================================================
+# The [default] section provides the baseline configuration used when no
+# directory-specific rule matches and no CLI arguments are provided.
+
+[default]
+# Base folder name - this is the directory created to hold organized buckets
+# Default: "refile"
+base_folder = "refile"
+
+# Bucket definitions - files are organized into these age-based categories
+# Format: bucket_name = max_age_in_days
+# - Use a number for the maximum age (e.g., 7 means "up to 7 days old")
+# - Use "null" for the catch-all bucket (holds everything older than other buckets)
+# - Buckets must be in ascending age order
+# - You MUST have at least one catch-all bucket (with null)
+
+[default.buckets]
+# Files 0-7 days old
+last-week = 7
+
+# Files 8-28 days old
+current-month = 28
+
+# Files 29-92 days old
+last-months = 92
+
+# Catch-all: files 93+ days old (REQUIRED)
+old-stuff = "null"
+
+# =============================================================================
+# DIRECTORY-SPECIFIC RULES
+# =============================================================================
+# Rules allow you to customize bucket configuration for specific directories.
+# When you run refile on a path, it checks if any rule matches that path.
+# The first matching rule's configuration is used.
+#
+# Rules are checked in order from top to bottom.
+
+# Example: Downloads folder with aggressive organization
+[[rules]]
+path = "~/Downloads"
+base_folder = "sorted"
+
+[rules.buckets]
+# Keep recent downloads easily accessible
+today = 1
+this-week = 7
+# Everything else goes to archive
+archive = "null"
+
+# Example: Documents folder with longer retention periods
+[[rules]]
+path = "~/Documents"
+base_folder = "organized"
+
+[rules.buckets]
+# Recent work
+current = 14
+# Projects from this quarter
+this-quarter = 90
+# Older projects
+archive = "null"
+
+# Example: Project directory with custom organization
+[[rules]]
+path = "~/Projects"
+base_folder = "archive"
+
+[rules.buckets]
+# Active projects (last 30 days)
+active = 30
+# Recent projects (last 6 months)
+recent = 180
+# Old projects (everything else)
+old = "null"
+
+# =============================================================================
+# BUCKET NAMING CONVENTIONS
+# =============================================================================
+# - Use lowercase with hyphens (e.g., "last-week", "old-stuff")
+# - Avoid special characters like / or \
+# - Names should be descriptive of the age range
+# - Common patterns:
+#   - Time-based: today, this-week, last-month
+#   - Descriptive: recent, current, archive, old-stuff
+#   - Activity: active, inactive, archived
+
+# =============================================================================
+# AGE CALCULATION
+# =============================================================================
+# Ages are based on the file/directory's modification time (mtime):
+# - For files: the last time the file content was modified
+# - For directories: the directory's own mtime (not the files inside)
+# - Age is calculated as: (current_time - mtime) in days
+#
+# Example: A file modified 10 days ago has age = 10 days
+# - If buckets are: recent=7, archive=null
+# - This file goes to "archive" (older than 7 days)
+
+# =============================================================================
+# PATH MATCHING
+# =============================================================================
+# - Paths support tilde expansion: ~/Downloads → /home/user/Downloads
+# - Matching is done by canonicalizing both the rule path and target path
+# - A rule matches if the target path is under the rule path
+# - Example: rule "~/Downloads" matches "~/Downloads/subfolder"
+
+# =============================================================================
+# USAGE EXAMPLES
+# =============================================================================
+# Basic usage (uses config):
+#   refile ~/Downloads
+#
+# Override base folder via CLI:
+#   refile --base-folder archive ~/Documents
+#
+# Override buckets via CLI:
+#   refile --buckets "recent=7,old=null" ~/Projects
+#
+# Dry run (see what would happen):
+#   refile --dry-run ~/Downloads
+#
+# Handle conflicts by renaming:
+#   refile --allow-rename ~/Downloads
+#
+# Organize into separate target:
+#   refile ~/Downloads ~/organized
+#
+# Show this config:
+#   refile --dump-config
+#
+# Show where config is loaded from:
+#   refile --config-path
+#
+# Validate config file:
+#   refile validate-config
+
+# =============================================================================
+# TROUBLESHOOTING
+# =============================================================================
+# - Config not loading? Check the path with: refile --config-path
+# - Invalid config? Validate with: refile validate-config
+# - Want to see what config is applied? Use: refile --dry-run --verbose
+# - Buckets must be in ascending age order (7, 28, 92, null)
+# - Must have exactly one catch-all bucket with age = null
+# - Bucket names cannot contain / or \ characters

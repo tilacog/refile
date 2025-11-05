@@ -2,7 +2,7 @@ mod config;
 mod core;
 mod filesystem;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use config::BucketConfig;
 use core::{compute_dest_path, is_protected_directory, paths_equal, pick_bucket, refile_base_path};
 use filesystem::{
@@ -16,7 +16,41 @@ use std::path::{Path, PathBuf};
 /// Organize files by age into categorized subdirectories
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
-struct Config {
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
+    #[command(flatten)]
+    refile: Option<RefileArgs>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Configuration file management
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ConfigCommand {
+    /// Initialize configuration file with default values
+    Init {
+        /// Overwrite existing configuration file
+        #[arg(long)]
+        force: bool,
+    },
+    /// Print example configuration to stdout
+    Dump,
+    /// Show configuration file path and status
+    Path,
+    /// Validate configuration file
+    Validate,
+}
+
+#[derive(Parser, Debug)]
+struct RefileArgs {
     /// Source directory to scan for files and directories
     source_dir: PathBuf,
 
@@ -54,10 +88,11 @@ enum FileAction {
 ///
 /// This function:
 /// 1. Parses command-line arguments
-/// 2. Creates bucket directories (or prints them in dry-run mode)
-/// 3. Collects all items to be processed
-/// 4. Plans move actions for each item
-/// 5. Executes the planned actions
+/// 2. Handles config subcommands or regular refile operations
+/// 3. Creates bucket directories (or prints them in dry-run mode)
+/// 4. Collects all items to be processed
+/// 5. Plans move actions for each item
+/// 6. Executes the planned actions
 ///
 /// # Errors
 ///
@@ -68,7 +103,72 @@ enum FileAction {
 /// - A file conflict occurs (in non-rename mode)
 /// - File operations fail
 fn main() -> io::Result<()> {
-    let cfg = Config::parse();
+    let cli = Cli::parse();
+
+    // Handle config subcommand
+    if let Some(Commands::Config { command }) = &cli.command {
+        return handle_config_command(command);
+    }
+
+    // Handle regular refile operation
+    let cfg = cli.refile.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Missing required argument: source_dir\n\nUsage: refile <SOURCE_DIR> [TARGET_DIR]\n\nFor more information, try '--help'",
+        )
+    })?;
+
+    run_refile(&cfg)
+}
+
+/// Handle config subcommands
+fn handle_config_command(command: &ConfigCommand) -> io::Result<()> {
+    match command {
+        ConfigCommand::Init { force } => {
+            let config_path =
+                config::get_config_file_path().map_err(|e| io::Error::other(e.to_string()))?;
+
+            config::write_default_config(&config_path, *force)
+                .map_err(|e| io::Error::other(e.to_string()))?;
+
+            println!("✓ Configuration file created: {}", config_path.display());
+            println!("\nEdit this file to customize your bucket configuration.");
+            println!("Run 'refile config validate' to check your configuration.");
+            Ok(())
+        }
+        ConfigCommand::Dump => {
+            print!("{}", config::get_example_config());
+            Ok(())
+        }
+        ConfigCommand::Path => {
+            let config_path =
+                config::get_config_file_path().map_err(|e| io::Error::other(e.to_string()))?;
+
+            println!("Configuration file path: {}", config_path.display());
+
+            if config_path.exists() {
+                println!("Status: ✓ File exists");
+            } else {
+                println!("Status: ✗ File does not exist");
+                println!("\nCreate it with: refile config init");
+            }
+            Ok(())
+        }
+        ConfigCommand::Validate => match config::validate_config_file() {
+            Ok(summary) => {
+                print!("{summary}");
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("✗ Configuration validation failed:\n{e}");
+                std::process::exit(1);
+            }
+        },
+    }
+}
+
+/// Run the regular refile operation
+fn run_refile(cfg: &RefileArgs) -> io::Result<()> {
     let target_dir = cfg.target_dir.as_ref().unwrap_or(&cfg.source_dir);
 
     // Warn about dangerous directories flag
@@ -110,7 +210,7 @@ fn main() -> io::Result<()> {
     // Plan actions for each item
     let actions: Vec<_> = items
         .into_iter()
-        .filter_map(|path| plan_action(&path, target_dir, &cfg, &bucket_config).transpose())
+        .filter_map(|path| plan_action(&path, target_dir, cfg, &bucket_config).transpose())
         .collect::<io::Result<_>>()?;
 
     // Execute actions
@@ -158,7 +258,7 @@ fn main() -> io::Result<()> {
 fn plan_action(
     path: &Path,
     target_dir: &Path,
-    cfg: &Config,
+    cfg: &RefileArgs,
     bucket_config: &BucketConfig,
 ) -> io::Result<Option<FileAction>> {
     // Check if this is a protected directory
@@ -599,7 +699,7 @@ mod tests {
     #[test]
     fn test_plan_action_rejects_protected_dir_by_default() {
         // Test that protected directories are rejected when allow_dangerous_directories is false
-        let cfg = Config {
+        let cfg = RefileArgs {
             source_dir: PathBuf::from("/tmp"),
             target_dir: None,
             dry_run: false,
@@ -622,7 +722,7 @@ mod tests {
     #[test]
     fn test_plan_action_allows_protected_dir_with_flag() {
         // Test that protected directories are allowed when allow_dangerous_directories is true
-        let cfg = Config {
+        let cfg = RefileArgs {
             source_dir: PathBuf::from("/tmp"),
             target_dir: None,
             dry_run: false,
@@ -653,7 +753,7 @@ mod tests {
     #[test]
     fn test_plan_action_allows_nonprotected_dirs_regardless_of_flag() {
         // Test that non-protected directories work with both flag values
-        let cfg_false = Config {
+        let cfg_false = RefileArgs {
             source_dir: PathBuf::from("/tmp/test"),
             target_dir: None,
             dry_run: false,
@@ -663,7 +763,7 @@ mod tests {
             buckets: None,
         };
 
-        let cfg_true = Config {
+        let cfg_true = RefileArgs {
             source_dir: PathBuf::from("/tmp/test"),
             target_dir: None,
             dry_run: false,

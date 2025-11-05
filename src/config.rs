@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::fmt::Write as FmtWrite;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -357,6 +358,154 @@ pub fn parse_buckets_spec(spec: &str) -> Result<Vec<BucketDef>, ConfigError> {
     }
 
     Ok(buckets)
+}
+
+/// Returns the path to the config file: $HOME/.config/refile/config.toml
+///
+/// This is a public function that can be used by CLI commands.
+pub fn get_config_file_path() -> Result<PathBuf, ConfigError> {
+    config_file_path()
+}
+
+/// Returns the embedded example configuration file content.
+pub fn get_example_config() -> &'static str {
+    include_str!("../example-config.toml")
+}
+
+/// Writes the example configuration to the specified path.
+///
+/// # Arguments
+///
+/// * `path` - The path where the config file should be written
+/// * `force` - If true, overwrite existing file; if false, fail if file exists
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The file already exists and force is false
+/// - The parent directory cannot be created
+/// - The file cannot be written
+pub fn write_default_config(path: &Path, force: bool) -> Result<(), ConfigError> {
+    // Check if file exists
+    if path.exists() && !force {
+        return Err(ConfigError::MissingConfig(format!(
+            "Config file already exists at {}. Use --force to overwrite.",
+            path.display()
+        )));
+    }
+
+    // Create parent directory if it doesn't exist
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            ConfigError::MissingConfig(format!(
+                "Failed to create config directory {}: {}",
+                parent.display(),
+                e
+            ))
+        })?;
+    }
+
+    // Write the example config
+    std::fs::write(path, get_example_config()).map_err(|e| {
+        ConfigError::MissingConfig(format!(
+            "Failed to write config file to {}: {}",
+            path.display(),
+            e
+        ))
+    })?;
+
+    Ok(())
+}
+
+/// Validates the configuration file and returns a detailed result.
+///
+/// This function loads and validates the config file, providing detailed
+/// information about any errors or the configuration structure.
+///
+/// # Returns
+///
+/// Returns `Ok(String)` with a summary of the configuration if valid,
+/// or `Err(ConfigError)` with details about what's wrong.
+pub fn validate_config_file() -> Result<String, ConfigError> {
+    let config_path = config_file_path()?;
+
+    // Check if config file exists
+    if !config_path.exists() {
+        return Err(ConfigError::MissingConfig(format!(
+            "Config file does not exist at: {}",
+            config_path.display()
+        )));
+    }
+
+    // Try to load the config
+    let config = load_config_file()?;
+
+    match config {
+        Some(config) => {
+            let mut summary = String::new();
+            writeln!(
+                summary,
+                "✓ Config file is valid: {}\n",
+                config_path.display()
+            )
+            .expect("Writing to String should not fail");
+
+            // Summarize default section
+            if let Some(default) = &config.default {
+                summary.push_str("Default configuration:\n");
+                writeln!(summary, "  Base folder: {}", default.base_folder)
+                    .expect("Writing to String should not fail");
+                summary.push_str("  Buckets:\n");
+
+                for (name, age) in &default.buckets {
+                    match age {
+                        Some(days) => {
+                            writeln!(summary, "    - {name} = {days} days")
+                                .expect("Writing to String should not fail");
+                        }
+                        None => {
+                            writeln!(summary, "    - {name} = catch-all")
+                                .expect("Writing to String should not fail");
+                        }
+                    }
+                }
+                summary.push('\n');
+            }
+
+            // Summarize rules
+            if !config.rules.is_empty() {
+                writeln!(summary, "Directory-specific rules: {}", config.rules.len())
+                    .expect("Writing to String should not fail");
+                for (i, rule) in config.rules.iter().enumerate() {
+                    writeln!(summary, "  Rule {}:", i + 1)
+                        .expect("Writing to String should not fail");
+                    writeln!(summary, "    Path: {}", rule.path)
+                        .expect("Writing to String should not fail");
+                    let base_folder = rule.base_folder.as_deref().unwrap_or("refile");
+                    writeln!(summary, "    Base folder: {base_folder}")
+                        .expect("Writing to String should not fail");
+                    summary.push_str("    Buckets:\n");
+                    for (name, age) in &rule.buckets {
+                        match age {
+                            Some(days) => {
+                                writeln!(summary, "      - {name} = {days} days")
+                                    .expect("Writing to String should not fail");
+                            }
+                            None => {
+                                writeln!(summary, "      - {name} = catch-all")
+                                    .expect("Writing to String should not fail");
+                            }
+                        }
+                    }
+                }
+            }
+
+            Ok(summary)
+        }
+        None => Err(ConfigError::MissingConfig(
+            "Config file exists but is empty or invalid".to_string(),
+        )),
+    }
 }
 
 // ============================================================================
