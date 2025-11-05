@@ -400,7 +400,14 @@ fn find_unique_dest(base: &Path) -> io::Result<PathBuf> {
 
     Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
-        "Could not find a unique destination name",
+        format!(
+            "Cannot find a unique name for '{}' - files already exist with names up to '{} (10000)'.\n\
+             \n\
+             You're using --allow-rename (-r), but there are too many conflicting files.\n\
+             Consider organizing the destination directory first or removing some duplicates.",
+            base.display(),
+            base.file_stem().and_then(|s| s.to_str()).unwrap_or("file")
+        ),
     ))
 }
 
