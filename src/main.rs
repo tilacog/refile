@@ -179,8 +179,8 @@ fn is_protected_directory(path: &Path) -> bool {
 fn pick_bucket(age: Duration, bucket_config: &BucketConfig) -> &BucketDef {
     let age_days = age.as_secs() / (24 * 3600);
 
-    for bucket in &bucket_config.buckets {
-        if let Some(max_days) = bucket.max_age_days {
+    for bucket in bucket_config.buckets() {
+        if let Some(max_days) = bucket.max_age_days() {
             if age_days <= max_days {
                 return bucket;
             }
@@ -192,7 +192,7 @@ fn pick_bucket(age: Duration, bucket_config: &BucketConfig) -> &BucketDef {
 
     // Should never reach here if validation passed (ensures catch-all exists)
     // Return last bucket as fallback
-    &bucket_config.buckets[bucket_config.buckets.len() - 1]
+    &bucket_config.buckets()[bucket_config.buckets().len() - 1]
 }
 
 /// Computes the base refile directory path within the target directory.
@@ -207,7 +207,7 @@ fn pick_bucket(age: Duration, bucket_config: &BucketConfig) -> &BucketDef {
 /// Path to `<target_dir>/<base_folder>`
 #[must_use]
 fn refile_base_path(target_dir: &Path, bucket_config: &BucketConfig) -> PathBuf {
-    target_dir.join(&bucket_config.base_folder)
+    target_dir.join(bucket_config.base_folder())
 }
 
 /// Computes the destination directory path for a specific bucket.
@@ -223,7 +223,7 @@ fn refile_base_path(target_dir: &Path, bucket_config: &BucketConfig) -> PathBuf 
 /// Path to `<target_dir>/<base_folder>/<bucket_name>`
 #[must_use]
 fn bucket_dest_dir(target_dir: &Path, bucket: &BucketDef, bucket_config: &BucketConfig) -> PathBuf {
-    refile_base_path(target_dir, bucket_config).join(&bucket.name)
+    refile_base_path(target_dir, bucket_config).join(bucket.name())
 }
 
 /// Computes the full destination path for a file based on its bucket.
@@ -304,7 +304,7 @@ fn is_bucket_dir<P: AsRef<Path>>(path: P, bucket_config: &BucketConfig) -> bool 
         return false;
     };
 
-    if parent_name != bucket_config.base_folder {
+    if parent_name != bucket_config.base_folder() {
         return false;
     }
 
@@ -314,9 +314,9 @@ fn is_bucket_dir<P: AsRef<Path>>(path: P, bucket_config: &BucketConfig) -> bool 
     };
 
     bucket_config
-        .buckets
+        .buckets()
         .iter()
-        .any(|bucket| bucket.name == dir_name)
+        .any(|bucket| bucket.name() == dir_name)
 }
 
 /// Compares two paths for equality, attempting canonical comparison.
@@ -442,8 +442,8 @@ fn find_unique_dest(base: &Path) -> io::Result<PathBuf> {
 /// other filesystem issues.
 fn create_bucket_dirs(refile_base: &Path, bucket_config: &BucketConfig) -> io::Result<()> {
     fs::create_dir_all(refile_base)?;
-    for bucket in &bucket_config.buckets {
-        fs::create_dir_all(refile_base.join(&bucket.name))?;
+    for bucket in bucket_config.buckets() {
+        fs::create_dir_all(refile_base.join(bucket.name()))?;
     }
     Ok(())
 }
@@ -461,8 +461,8 @@ fn print_dry_run_dirs(refile_base: &Path, bucket_config: &BucketConfig) {
     if !refile_base.exists() {
         println!("[dry-run] CREATE DIR {}", refile_base.display());
     }
-    for bucket in &bucket_config.buckets {
-        let dir = refile_base.join(&bucket.name);
+    for bucket in bucket_config.buckets() {
+        let dir = refile_base.join(bucket.name());
         if !dir.exists() {
             println!("[dry-run] CREATE DIR {}", dir.display());
         }
@@ -811,84 +811,75 @@ mod tests {
 
         // 0 days -> last-week
         let bucket = pick_bucket(Duration::from_secs(0), &config);
-        assert_eq!(bucket.name, "last-week");
+        assert_eq!(bucket.name(), "last-week");
 
         // 3 days -> last-week
         let bucket = pick_bucket(Duration::from_secs(3 * 24 * 3600), &config);
-        assert_eq!(bucket.name, "last-week");
+        assert_eq!(bucket.name(), "last-week");
 
         // 7 days -> last-week
         let bucket = pick_bucket(Duration::from_secs(7 * 24 * 3600), &config);
-        assert_eq!(bucket.name, "last-week");
+        assert_eq!(bucket.name(), "last-week");
 
         // 8 days -> current-month
         let bucket = pick_bucket(Duration::from_secs(8 * 24 * 3600), &config);
-        assert_eq!(bucket.name, "current-month");
+        assert_eq!(bucket.name(), "current-month");
 
         // 28 days -> current-month
         let bucket = pick_bucket(Duration::from_secs(28 * 24 * 3600), &config);
-        assert_eq!(bucket.name, "current-month");
+        assert_eq!(bucket.name(), "current-month");
 
         // 29 days -> last-months
         let bucket = pick_bucket(Duration::from_secs(29 * 24 * 3600), &config);
-        assert_eq!(bucket.name, "last-months");
+        assert_eq!(bucket.name(), "last-months");
 
         // 92 days -> last-months
         let bucket = pick_bucket(Duration::from_secs(92 * 24 * 3600), &config);
-        assert_eq!(bucket.name, "last-months");
+        assert_eq!(bucket.name(), "last-months");
 
         // 93 days -> old-stuff
         let bucket = pick_bucket(Duration::from_secs(93 * 24 * 3600), &config);
-        assert_eq!(bucket.name, "old-stuff");
+        assert_eq!(bucket.name(), "old-stuff");
 
         // 365 days -> old-stuff
         let bucket = pick_bucket(Duration::from_secs(365 * 24 * 3600), &config);
-        assert_eq!(bucket.name, "old-stuff");
+        assert_eq!(bucket.name(), "old-stuff");
     }
 
     #[test]
     fn test_pick_bucket_with_custom_config() {
-        let config = BucketConfig {
-            base_folder: "sorted".to_string(),
-            buckets: vec![
-                BucketDef {
-                    name: "today".to_string(),
-                    max_age_days: Some(1),
-                },
-                BucketDef {
-                    name: "week".to_string(),
-                    max_age_days: Some(7),
-                },
-                BucketDef {
-                    name: "old".to_string(),
-                    max_age_days: None,
-                },
+        let config = BucketConfig::new_for_test(
+            "sorted".to_string(),
+            vec![
+                BucketDef::new("today".to_string(), Some(1)),
+                BucketDef::new("week".to_string(), Some(7)),
+                BucketDef::new("old".to_string(), None),
             ],
-        };
+        );
 
         // 0 days -> today
         let bucket = pick_bucket(Duration::from_secs(0), &config);
-        assert_eq!(bucket.name, "today");
+        assert_eq!(bucket.name(), "today");
 
         // 1 day -> today
         let bucket = pick_bucket(Duration::from_secs(24 * 3600), &config);
-        assert_eq!(bucket.name, "today");
+        assert_eq!(bucket.name(), "today");
 
         // 2 days -> week
         let bucket = pick_bucket(Duration::from_secs(2 * 24 * 3600), &config);
-        assert_eq!(bucket.name, "week");
+        assert_eq!(bucket.name(), "week");
 
         // 7 days -> week
         let bucket = pick_bucket(Duration::from_secs(7 * 24 * 3600), &config);
-        assert_eq!(bucket.name, "week");
+        assert_eq!(bucket.name(), "week");
 
         // 8 days -> old
         let bucket = pick_bucket(Duration::from_secs(8 * 24 * 3600), &config);
-        assert_eq!(bucket.name, "old");
+        assert_eq!(bucket.name(), "old");
 
         // 100 days -> old
         let bucket = pick_bucket(Duration::from_secs(100 * 24 * 3600), &config);
-        assert_eq!(bucket.name, "old");
+        assert_eq!(bucket.name(), "old");
     }
 
     #[test]
@@ -897,13 +888,10 @@ mod tests {
         let base = refile_base_path(Path::new("/home/user/documents"), &config);
         assert_eq!(base, PathBuf::from("/home/user/documents/refile"));
 
-        let custom_config = BucketConfig {
-            base_folder: "archive".to_string(),
-            buckets: vec![BucketDef {
-                name: "old".to_string(),
-                max_age_days: None,
-            }],
-        };
+        let custom_config = BucketConfig::new_for_test(
+            "archive".to_string(),
+            vec![BucketDef::new("old".to_string(), None)],
+        );
         let base = refile_base_path(Path::new("/home/user/documents"), &custom_config);
         assert_eq!(base, PathBuf::from("/home/user/documents/archive"));
     }
@@ -913,13 +901,13 @@ mod tests {
         let config = default_config();
         let target = Path::new("/home/user/documents");
 
-        let bucket = &config.buckets[0]; // last-week
+        let bucket = &config.buckets()[0]; // last-week
         assert_eq!(
             bucket_dest_dir(target, bucket, &config),
             PathBuf::from("/home/user/documents/refile/last-week")
         );
 
-        let bucket = &config.buckets[1]; // current-month
+        let bucket = &config.buckets()[1]; // current-month
         assert_eq!(
             bucket_dest_dir(target, bucket, &config),
             PathBuf::from("/home/user/documents/refile/current-month")
@@ -932,7 +920,7 @@ mod tests {
         let source = Path::new("/home/user/documents/file.txt");
         let target = Path::new("/home/user/archive");
 
-        let bucket = &config.buckets[0]; // last-week
+        let bucket = &config.buckets()[0]; // last-week
         let dest = compute_dest_path(source, target, bucket, &config);
         assert_eq!(
             dest,
@@ -941,7 +929,7 @@ mod tests {
             ))
         );
 
-        let bucket = &config.buckets[3]; // old-stuff
+        let bucket = &config.buckets()[3]; // old-stuff
         let dest = compute_dest_path(source, target, bucket, &config);
         assert_eq!(
             dest,
@@ -954,7 +942,7 @@ mod tests {
     #[test]
     fn test_compute_dest_path_no_filename() {
         let config = default_config();
-        let bucket = &config.buckets[0];
+        let bucket = &config.buckets()[0];
         let dest = compute_dest_path(
             Path::new("/"),
             Path::new("/home/user/archive"),
@@ -1042,19 +1030,13 @@ mod tests {
 
     #[test]
     fn test_is_bucket_dir_with_custom_config() {
-        let config = BucketConfig {
-            base_folder: "archive".to_string(),
-            buckets: vec![
-                BucketDef {
-                    name: "recent".to_string(),
-                    max_age_days: Some(7),
-                },
-                BucketDef {
-                    name: "old".to_string(),
-                    max_age_days: None,
-                },
+        let config = BucketConfig::new_for_test(
+            "archive".to_string(),
+            vec![
+                BucketDef::new("recent".to_string(), Some(7)),
+                BucketDef::new("old".to_string(), None),
             ],
-        };
+        );
 
         // Valid with custom base folder
         assert!(is_bucket_dir("/home/user/archive/recent", &config));

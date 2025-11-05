@@ -36,15 +36,53 @@ pub enum ConfigError {
 /// Represents a single bucket configuration with name and maximum age.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BucketDef {
-    pub name: String,
-    pub max_age_days: Option<u64>, // None means infinity (catch-all)
+    name: String,
+    max_age_days: Option<u64>, // None means infinity (catch-all)
+}
+
+impl BucketDef {
+    /// Creates a new bucket definition.
+    pub fn new(name: String, max_age_days: Option<u64>) -> Self {
+        Self { name, max_age_days }
+    }
+
+    /// Returns the bucket name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the maximum age in days, or None for catch-all buckets.
+    pub fn max_age_days(&self) -> Option<u64> {
+        self.max_age_days
+    }
 }
 
 /// Runtime bucket configuration.
 #[derive(Debug, Clone)]
 pub struct BucketConfig {
-    pub base_folder: String,
-    pub buckets: Vec<BucketDef>,
+    base_folder: String,
+    buckets: Vec<BucketDef>,
+}
+
+impl BucketConfig {
+    /// Returns the base folder name.
+    pub fn base_folder(&self) -> &str {
+        &self.base_folder
+    }
+
+    /// Returns a slice of all bucket definitions.
+    pub fn buckets(&self) -> &[BucketDef] {
+        &self.buckets
+    }
+
+    /// Creates a new bucket configuration (for testing).
+    #[cfg(test)]
+    pub fn new_for_test(base_folder: String, buckets: Vec<BucketDef>) -> Self {
+        Self {
+            base_folder,
+            buckets,
+        }
+    }
 }
 
 impl Default for BucketConfig {
@@ -53,22 +91,10 @@ impl Default for BucketConfig {
         Self {
             base_folder: "refile".to_string(),
             buckets: vec![
-                BucketDef {
-                    name: "last-week".to_string(),
-                    max_age_days: Some(7),
-                },
-                BucketDef {
-                    name: "current-month".to_string(),
-                    max_age_days: Some(28),
-                },
-                BucketDef {
-                    name: "last-months".to_string(),
-                    max_age_days: Some(92),
-                },
-                BucketDef {
-                    name: "old-stuff".to_string(),
-                    max_age_days: None,
-                },
+                BucketDef::new("last-week".to_string(), Some(7)),
+                BucketDef::new("current-month".to_string(), Some(28)),
+                BucketDef::new("last-months".to_string(), Some(92)),
+                BucketDef::new("old-stuff".to_string(), None),
             ],
         }
     }
@@ -166,7 +192,7 @@ fn default_base_folder() -> String {
 /// Converts a `BTreeMap` of bucket definitions to a Vec<BucketDef>.
 fn buckets_from_map(map: BTreeMap<String, Option<u64>>) -> Vec<BucketDef> {
     map.into_iter()
-        .map(|(name, max_age_days)| BucketDef { name, max_age_days })
+        .map(|(name, max_age_days)| BucketDef::new(name, max_age_days))
         .collect()
 }
 
@@ -321,10 +347,7 @@ pub fn parse_buckets_spec(spec: &str) -> Result<Vec<BucketDef>, ConfigError> {
             })?)
         };
 
-        buckets.push(BucketDef {
-            name: name.to_string(),
-            max_age_days,
-        });
+        buckets.push(BucketDef::new(name.to_string(), max_age_days));
     }
 
     if buckets.is_empty() {
@@ -347,8 +370,8 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = BucketConfig::default();
-        assert_eq!(config.base_folder, "refile");
-        assert_eq!(config.buckets.len(), 4);
+        assert_eq!(config.base_folder(), "refile");
+        assert_eq!(config.buckets().len(), 4);
         assert!(config.validate().is_ok());
     }
 
@@ -366,14 +389,8 @@ mod tests {
         let config = BucketConfig {
             base_folder: "test".to_string(),
             buckets: vec![
-                BucketDef {
-                    name: "bucket1".to_string(),
-                    max_age_days: Some(7),
-                },
-                BucketDef {
-                    name: "bucket2".to_string(),
-                    max_age_days: Some(14),
-                },
+                BucketDef::new("bucket1".to_string(), Some(7)),
+                BucketDef::new("bucket2".to_string(), Some(14)),
             ],
         };
         assert!(config.validate().is_err());
@@ -384,18 +401,9 @@ mod tests {
         let config = BucketConfig {
             base_folder: "test".to_string(),
             buckets: vec![
-                BucketDef {
-                    name: "bucket1".to_string(),
-                    max_age_days: Some(14),
-                },
-                BucketDef {
-                    name: "bucket2".to_string(),
-                    max_age_days: Some(7),
-                },
-                BucketDef {
-                    name: "bucket3".to_string(),
-                    max_age_days: None,
-                },
+                BucketDef::new("bucket1".to_string(), Some(14)),
+                BucketDef::new("bucket2".to_string(), Some(7)),
+                BucketDef::new("bucket3".to_string(), None),
             ],
         };
         assert!(config.validate().is_err());
@@ -406,14 +414,8 @@ mod tests {
         let config = BucketConfig {
             base_folder: "test".to_string(),
             buckets: vec![
-                BucketDef {
-                    name: "bucket/invalid".to_string(),
-                    max_age_days: Some(7),
-                },
-                BucketDef {
-                    name: "old".to_string(),
-                    max_age_days: None,
-                },
+                BucketDef::new("bucket/invalid".to_string(), Some(7)),
+                BucketDef::new("old".to_string(), None),
             ],
         };
         assert!(config.validate().is_err());
@@ -425,12 +427,12 @@ mod tests {
         let buckets = parse_buckets_spec(spec).unwrap();
 
         assert_eq!(buckets.len(), 3);
-        assert_eq!(buckets[0].name, "today");
-        assert_eq!(buckets[0].max_age_days, Some(1));
-        assert_eq!(buckets[1].name, "week");
-        assert_eq!(buckets[1].max_age_days, Some(7));
-        assert_eq!(buckets[2].name, "old");
-        assert_eq!(buckets[2].max_age_days, None);
+        assert_eq!(buckets[0].name(), "today");
+        assert_eq!(buckets[0].max_age_days(), Some(1));
+        assert_eq!(buckets[1].name(), "week");
+        assert_eq!(buckets[1].max_age_days(), Some(7));
+        assert_eq!(buckets[2].name(), "old");
+        assert_eq!(buckets[2].max_age_days(), None);
     }
 
     #[test]
