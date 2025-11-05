@@ -78,7 +78,8 @@ fn main() -> io::Result<()> {
     }
 
     // Load configuration file
-    let config_file = config::load_config_file()?;
+    let config_file = config::load_config_file()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
     // Resolve bucket configuration
     let bucket_config = config::resolve_bucket_config(
@@ -86,7 +87,8 @@ fn main() -> io::Result<()> {
         config_file.as_ref(),
         cfg.base_folder.as_deref(),
         cfg.buckets.as_deref(),
-    )?;
+    )
+    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
     let refile_base = refile_base_path(target_dir, &bucket_config);
 

@@ -3,6 +3,35 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use thiserror::Error;
+
+/// Errors that can occur during configuration operations.
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    /// IO error while reading or accessing configuration files.
+    #[error("IO error: {0}")]
+    Io(#[from] io::Error),
+
+    /// Invalid configuration structure or values.
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(String),
+
+    /// Configuration file parsing error.
+    #[error("Failed to parse configuration file: {0}")]
+    ParseError(String),
+
+    /// Invalid bucket specification from CLI.
+    #[error("Invalid bucket specification: {0}")]
+    InvalidBucketSpec(String),
+
+    /// Invalid bucket name.
+    #[error("Invalid bucket name '{0}': {1}")]
+    InvalidBucketName(String, String),
+
+    /// Missing required configuration element.
+    #[error("Missing required configuration: {0}")]
+    MissingConfig(String),
+}
 
 /// Represents a single bucket configuration with name and maximum age.
 #[derive(Debug, Clone, PartialEq)]
@@ -53,34 +82,33 @@ impl BucketConfig {
     /// - Age thresholds are not in ascending order
     /// - No catch-all bucket (with None age) exists
     /// - Bucket names contain invalid characters
-    pub fn validate(&self) -> io::Result<()> {
+    pub fn validate(&self) -> Result<(), ConfigError> {
         if self.buckets.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "At least one bucket must be defined",
+            return Err(ConfigError::InvalidConfig(
+                "At least one bucket must be defined".to_string(),
             ));
         }
 
         // Check for catch-all bucket
         if !self.buckets.iter().any(|b| b.max_age_days.is_none()) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "At least one bucket must have no age limit (null) to catch all old files",
+            return Err(ConfigError::InvalidConfig(
+                "At least one bucket must have no age limit (null) to catch all old files"
+                    .to_string(),
             ));
         }
 
         // Validate bucket names
         for bucket in &self.buckets {
             if bucket.name.is_empty() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Bucket names cannot be empty",
+                return Err(ConfigError::InvalidBucketName(
+                    bucket.name.clone(),
+                    "Bucket names cannot be empty".to_string(),
                 ));
             }
             if bucket.name.contains('/') || bucket.name.contains('\\') {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("Bucket name '{}' contains invalid characters", bucket.name),
+                return Err(ConfigError::InvalidBucketName(
+                    bucket.name.clone(),
+                    "contains invalid characters (/ or \\)".to_string(),
                 ));
             }
         }
@@ -92,10 +120,9 @@ impl BucketConfig {
                 if let Some(prev) = prev_age
                     && age <= prev
                 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("Bucket ages must be in ascending order: {age} <= {prev}"),
-                    ));
+                    return Err(ConfigError::InvalidConfig(format!(
+                        "Bucket ages must be in ascending order: {age} <= {prev}"
+                    )));
                 }
                 prev_age = Some(age);
             }
@@ -146,7 +173,7 @@ fn buckets_from_map(map: BTreeMap<String, Option<u64>>) -> Vec<BucketDef> {
 /// Loads the refile configuration from the default config file location.
 ///
 /// Returns Ok(None) if the config file doesn't exist.
-pub fn load_config_file() -> io::Result<Option<RefileConfigFile>> {
+pub fn load_config_file() -> Result<Option<RefileConfigFile>, ConfigError> {
     let config_path = config_file_path()?;
 
     if !config_path.exists() {
@@ -154,33 +181,26 @@ pub fn load_config_file() -> io::Result<Option<RefileConfigFile>> {
     }
 
     let contents = fs::read_to_string(&config_path).map_err(|e| {
-        io::Error::new(
+        ConfigError::Io(io::Error::new(
             e.kind(),
             format!(
                 "Failed to read config file {}: {}",
                 config_path.display(),
                 e
             ),
-        )
+        ))
     })?;
 
-    let config: RefileConfigFile = toml::from_str(&contents).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Failed to parse config file: {e}"),
-        )
-    })?;
+    let config: RefileConfigFile =
+        toml::from_str(&contents).map_err(|e| ConfigError::ParseError(format!("{e}")))?;
 
     Ok(Some(config))
 }
 
 /// Returns the path to the config file: $HOME/.config/refile/config.toml
-fn config_file_path() -> io::Result<PathBuf> {
+fn config_file_path() -> Result<PathBuf, ConfigError> {
     let config_dir = dirs::config_dir().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "Could not determine config directory",
-        )
+        ConfigError::MissingConfig("Could not determine config directory".to_string())
     })?;
 
     Ok(config_dir.join("refile").join("config.toml"))
@@ -198,7 +218,7 @@ pub fn resolve_bucket_config(
     config_file: Option<&RefileConfigFile>,
     base_folder_override: Option<&str>,
     buckets_override: Option<&str>,
-) -> io::Result<BucketConfig> {
+) -> Result<BucketConfig, ConfigError> {
     // Start with built-in default
     let mut config = BucketConfig::default();
 
@@ -267,7 +287,7 @@ fn expand_tilde(path: &str) -> PathBuf {
 ///
 /// Format: "name1=days1,name2=days2,name3=null"
 /// Example: "today=1,week=7,old=null"
-pub fn parse_buckets_spec(spec: &str) -> io::Result<Vec<BucketDef>> {
+pub fn parse_buckets_spec(spec: &str) -> Result<Vec<BucketDef>, ConfigError> {
     let mut buckets = Vec::new();
 
     for part in spec.split(',') {
@@ -280,20 +300,16 @@ pub fn parse_buckets_spec(spec: &str) -> io::Result<Vec<BucketDef>> {
         let name = split
             .next()
             .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("Invalid bucket spec: '{part}'"),
-                )
+                ConfigError::InvalidBucketSpec(format!("Invalid bucket spec: '{part}'"))
             })?
             .trim();
 
         let age_str = split
             .next()
             .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("Invalid bucket spec, missing '=' in: '{part}'"),
-                )
+                ConfigError::InvalidBucketSpec(format!(
+                    "Invalid bucket spec, missing '=' in: '{part}'"
+                ))
             })?
             .trim();
 
@@ -301,10 +317,7 @@ pub fn parse_buckets_spec(spec: &str) -> io::Result<Vec<BucketDef>> {
             None
         } else {
             Some(age_str.parse::<u64>().map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("Invalid age value '{age_str}': {e}"),
-                )
+                ConfigError::InvalidBucketSpec(format!("Invalid age value '{age_str}': {e}"))
             })?)
         };
 
@@ -315,9 +328,8 @@ pub fn parse_buckets_spec(spec: &str) -> io::Result<Vec<BucketDef>> {
     }
 
     if buckets.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Bucket spec cannot be empty",
+        return Err(ConfigError::InvalidBucketSpec(
+            "Bucket spec cannot be empty".to_string(),
         ));
     }
 
