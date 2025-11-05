@@ -143,8 +143,8 @@ fn is_protected_directory(path: &Path) -> bool {
 
     // Check if it's the user's home directory
     if let Ok(home) = env::var("HOME") {
-        let canonical_home =
-            fs::canonicalize(home).unwrap_or_else(|e| PathBuf::from(e.to_string()));
+        // If canonicalization fails for HOME, fall back to the raw path
+        let canonical_home = fs::canonicalize(&home).unwrap_or_else(|_| PathBuf::from(home));
         if canonical == canonical_home {
             return true;
         }
@@ -173,6 +173,7 @@ fn is_protected_directory(path: &Path) -> bool {
 /// # Returns
 ///
 /// A reference to the matching `BucketDef`, or the last bucket (catch-all) if none match.
+#[must_use]
 fn pick_bucket(age: Duration, bucket_config: &BucketConfig) -> &BucketDef {
     let age_days = age.as_secs() / (24 * 3600);
 
@@ -202,6 +203,7 @@ fn pick_bucket(age: Duration, bucket_config: &BucketConfig) -> &BucketDef {
 /// # Returns
 ///
 /// Path to `<target_dir>/<base_folder>`
+#[must_use]
 fn refile_base_path(target_dir: &Path, bucket_config: &BucketConfig) -> PathBuf {
     target_dir.join(&bucket_config.base_folder)
 }
@@ -217,6 +219,7 @@ fn refile_base_path(target_dir: &Path, bucket_config: &BucketConfig) -> PathBuf 
 /// # Returns
 ///
 /// Path to `<target_dir>/<base_folder>/<bucket_name>`
+#[must_use]
 fn bucket_dest_dir(target_dir: &Path, bucket: &BucketDef, bucket_config: &BucketConfig) -> PathBuf {
     refile_base_path(target_dir, bucket_config).join(&bucket.name)
 }
@@ -233,6 +236,7 @@ fn bucket_dest_dir(target_dir: &Path, bucket: &BucketDef, bucket_config: &Bucket
 /// # Returns
 ///
 /// `Some(PathBuf)` with the full destination path, or `None` if the source has no filename
+#[must_use]
 fn compute_dest_path(
     source: &Path,
     target_dir: &Path,
@@ -256,6 +260,7 @@ fn compute_dest_path(
 /// # Returns
 ///
 /// A new path with the suffix inserted: `filename (N).ext` or `filename (N)`
+#[must_use]
 fn generate_unique_name(base: &Path, suffix: usize) -> PathBuf {
     let parent = base.parent().unwrap_or_else(|| Path::new("."));
     let stem = base
@@ -312,11 +317,14 @@ fn is_bucket_dir<P: AsRef<Path>>(path: P, bucket_config: &BucketConfig) -> bool 
         .any(|bucket| bucket.name == dir_name)
 }
 
-/// Compares two paths for equality, attempting canonical comparison first.
+/// Compares two paths for equality, attempting canonical comparison.
 ///
-/// This function first tries to canonicalize both paths (resolving symlinks and
-/// relative components). If canonicalization fails for either path, it falls back
-/// to direct path comparison.
+/// This function tries to canonicalize both paths (resolving symlinks and
+/// relative components). Only returns true if both paths can be canonicalized
+/// and they refer to the same location.
+///
+/// If either path cannot be canonicalized (e.g., doesn't exist), returns false,
+/// since we cannot reliably determine if they would refer to the same location.
 ///
 /// **Note**: This function performs IO (via `fs::canonicalize`) and is not strictly pure.
 ///
@@ -327,14 +335,13 @@ fn is_bucket_dir<P: AsRef<Path>>(path: P, bucket_config: &BucketConfig) -> bool 
 ///
 /// # Returns
 ///
-/// `true` if the paths refer to the same location
+/// `true` if both paths exist and refer to the same location, `false` otherwise
 fn paths_equal(a: &Path, b: &Path) -> bool {
-    // Try canonical comparison first
-    if let (Ok(ca), Ok(cb)) = (fs::canonicalize(a), fs::canonicalize(b)) {
-        return ca == cb;
+    // Only consider paths equal if BOTH can be canonicalized and match
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(ca), Ok(cb)) => ca == cb,
+        _ => false, // If either fails, assume they're different
     }
-    // Fallback to direct comparison
-    a == b
 }
 
 // ============================================================================
@@ -345,7 +352,7 @@ fn paths_equal(a: &Path, b: &Path) -> bool {
 ///
 /// The age is calculated as the duration between now and the file's last
 /// modification time. Falls back to creation time if modification time is
-/// unavailable, and to zero age if both are unavailable.
+/// unavailable.
 ///
 /// # Arguments
 ///
@@ -353,23 +360,27 @@ fn paths_equal(a: &Path, b: &Path) -> bool {
 ///
 /// # Returns
 ///
-/// `Ok(Duration)` representing the file's age, or an error if metadata cannot be read
+/// `Ok(Duration)` representing the file's age, or an error if:
+/// - File metadata cannot be accessed
+/// - Neither modification nor creation time is available
+/// - File timestamp is in the future (possible clock skew)
 ///
 /// # Errors
 ///
 /// Returns an error if the file metadata cannot be accessed (e.g., file doesn't exist,
-/// permission denied).
+/// permission denied), or if file timestamps are unavailable or invalid.
 fn get_file_age(path: &Path) -> io::Result<Duration> {
     let meta = fs::metadata(path)?;
-    let modified = meta
+
+    // Try modification time first, fall back to creation time
+    let timestamp = meta
         .modified()
         .or_else(|_| meta.created())
-        .unwrap_or_else(|_| SystemTime::now());
+        .map_err(|e| io::Error::other(format!("Cannot read file timestamp: {e}")))?;
+
     let now = SystemTime::now();
-    let age = now
-        .duration_since(modified)
-        .unwrap_or(Duration::from_secs(0));
-    Ok(age)
+    now.duration_since(timestamp)
+        .map_err(|_| io::Error::other("File timestamp is in the future - check system clock"))
 }
 
 /// Finds a unique destination path by trying numbered suffixes.
@@ -1056,7 +1067,8 @@ mod tests {
 
     #[test]
     fn test_paths_equal_same_path() {
-        let path = Path::new("/tmp/test.txt");
+        // Use root path which always exists
+        let path = Path::new("/");
         assert!(paths_equal(path, path));
     }
 
@@ -1070,13 +1082,14 @@ mod tests {
 
     #[test]
     fn test_paths_equal_nonexistent() {
-        // Should still compare correctly even if paths don't exist
+        // Nonexistent paths cannot be reliably compared, so should return false
         let path1 = Path::new("/nonexistent/path1");
         let path2 = Path::new("/nonexistent/path2");
         assert!(!paths_equal(path1, path2));
 
+        // Even if the strings are identical, if they don't exist, we return false
         let path3 = Path::new("/nonexistent/path1");
-        assert!(paths_equal(path1, path3));
+        assert!(!paths_equal(path1, path3));
     }
 
     #[test]

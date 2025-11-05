@@ -18,9 +18,9 @@ pub struct BucketConfig {
     pub buckets: Vec<BucketDef>,
 }
 
-impl BucketConfig {
+impl Default for BucketConfig {
     /// Returns the default built-in configuration.
-    pub fn default() -> Self {
+    fn default() -> Self {
         Self {
             base_folder: "refile".to_string(),
             buckets: vec![
@@ -43,7 +43,9 @@ impl BucketConfig {
             ],
         }
     }
+}
 
+impl BucketConfig {
     /// Validates the bucket configuration.
     ///
     /// Returns an error if:
