@@ -38,15 +38,18 @@ base_folder = "refile"
 
 [default.buckets]
 # Files 0-7 days old
-last-week = 7
+current-week = 7
 
-# Files 8-28 days old
-current-month = 28
+# Files 8-14 days old
+last-week = 14
 
-# Files 29-92 days old
-last-months = 92
+# Files 15-30 days old
+current-month = 30
 
-# Catch-all: files 93+ days old (REQUIRED)
+# Files 31-180 days old
+last-months = 180
+
+# Catch-all: files 181+ days old (REQUIRED)
 old-stuff = "null"
 
 # =============================================================================
@@ -163,6 +166,6 @@ old = "null"
 # - Config not loading? Check the path with: refile --config-path
 # - Invalid config? Validate with: refile validate-config
 # - Want to see what config is applied? Use: refile --dry-run --verbose
-# - Buckets must be in ascending age order (7, 28, 92, null)
+# - Buckets must be in ascending age order (7, 14, 30, 180, null)
 # - Must have exactly one catch-all bucket with age = null
 # - Bucket names cannot contain / or \ characters

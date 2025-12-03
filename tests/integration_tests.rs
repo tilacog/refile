@@ -24,14 +24,14 @@ use std::time::{Duration, SystemTime};
 const SECONDS_PER_DAY: u64 = 24 * 3600;
 
 // Test file age constants (based on default bucket boundaries)
-const RECENT_FILE_AGE: u64 = 3; // last-week bucket (0-7 days)
-const MEDIUM_FILE_AGE: u64 = 15; // current-month bucket (8-28 days)
-const LAST_MONTHS_AGE: u64 = 50; // last-months bucket (29-92 days)
-const OLD_FILE_AGE: u64 = 100; // old-stuff bucket (93+ days)
+const RECENT_FILE_AGE: u64 = 3; // current-week bucket (0-7 days)
+const MEDIUM_FILE_AGE: u64 = 15; // current-month bucket (15-30 days)
+const LAST_MONTHS_AGE: u64 = 50; // last-months bucket (31-180 days)
+const OLD_FILE_AGE: u64 = 200; // old-stuff bucket (181+ days)
 
 // Bucket path constants
 const REFILE_BASE: &str = "refile";
-const LAST_WEEK_BUCKET: &str = "refile/last-week";
+const CURRENT_WEEK_BUCKET: &str = "refile/current-week";
 const CURRENT_MONTH_BUCKET: &str = "refile/current-month";
 const LAST_MONTHS_BUCKET: &str = "refile/last-months";
 const OLD_STUFF_BUCKET: &str = "refile/old-stuff";
@@ -58,9 +58,9 @@ fn refile_cmd() -> Command {
 ///
 /// Creates files with different ages and verifies they are moved to the correct
 /// bucket directories based on default configuration:
-/// - 3-day-old file → last-week/
+/// - 3-day-old file → current-week/
 /// - 15-day-old file → current-month/
-/// - 100-day-old file → old-stuff/
+/// - 200-day-old file → old-stuff/
 ///
 /// Also verifies that original files are removed from source directory after move.
 #[test]
@@ -86,7 +86,7 @@ fn test_basic_file_organization() {
         .child(REFILE_BASE)
         .assert(predicates::path::exists());
     temp_dir
-        .child(format!("{LAST_WEEK_BUCKET}/recent.txt"))
+        .child(format!("{CURRENT_WEEK_BUCKET}/recent.txt"))
         .assert(predicates::path::exists());
     temp_dir
         .child(format!("{CURRENT_MONTH_BUCKET}/medium.txt"))
@@ -143,7 +143,7 @@ fn test_dry_run_does_not_move_files() {
     if refile_dir.path().exists() {
         // If refile directory was created, verify test file is not in any bucket
         temp_dir
-            .child(format!("{LAST_WEEK_BUCKET}/test.txt"))
+            .child(format!("{CURRENT_WEEK_BUCKET}/test.txt"))
             .assert(predicates::path::missing());
     }
 }
@@ -219,34 +219,34 @@ fn test_allow_rename_handles_conflicts() {
         .success();
 
     // Both files should exist (one renamed with suffix (1))
-    let last_week = source.join(LAST_WEEK_BUCKET);
+    let current_week = source.join(CURRENT_WEEK_BUCKET);
 
     // Verify exactly 2 files exist in the bucket
-    let entries: Vec<_> = fs::read_dir(&last_week)
-        .expect("Failed to read last-week directory")
+    let entries: Vec<_> = fs::read_dir(&current_week)
+        .expect("Failed to read current-week directory")
         .collect::<Result<Vec<_>, _>>()
         .expect("Failed to iterate directory entries");
     assert_eq!(
         entries.len(),
         2,
-        "Expected exactly 2 files in last-week bucket"
+        "Expected exactly 2 files in current-week bucket"
     );
 
     // Verify the original file exists
     assert!(
-        last_week.join("file.txt").exists(),
+        current_week.join("file.txt").exists(),
         "Original file.txt should exist"
     );
 
     // Verify exactly one renamed file with suffix (1)
     assert!(
-        last_week.join("file (1).txt").exists(),
+        current_week.join("file (1).txt").exists(),
         "Conflicting file should be renamed to file (1).txt"
     );
 
     // Ensure no higher numbered suffixes exist
     assert!(
-        !last_week.join("file (2).txt").exists(),
+        !current_week.join("file (2).txt").exists(),
         "Should not skip to suffix (2)"
     );
 }
@@ -258,7 +258,7 @@ fn test_allow_rename_handles_conflicts() {
 ///
 /// **Scenario**: Use --base-folder to specify "archive" instead of "refile".
 ///
-/// **Expected**: Files are organized into `archive/last-week/` instead of `refile/last-week/`.
+/// **Expected**: Files are organized into `archive/current-week/` instead of `refile/current-week/`.
 #[test]
 fn test_custom_base_folder() {
     let temp_dir = TempDir::new().expect("Failed to create temporary directory");
@@ -276,7 +276,7 @@ fn test_custom_base_folder() {
 
     // Check file is in custom base folder
     temp_dir
-        .child("archive/last-week/test.txt")
+        .child("archive/current-week/test.txt")
         .assert(predicates::path::exists());
     temp_dir
         .child(REFILE_BASE)
@@ -369,7 +369,7 @@ fn test_separate_target_directory() {
 
     // File should be in target directory
     target_dir
-        .child(format!("{LAST_WEEK_BUCKET}/test.txt"))
+        .child(format!("{CURRENT_WEEK_BUCKET}/test.txt"))
         .assert(predicates::path::exists());
     source_dir
         .child("test.txt")
@@ -497,10 +497,10 @@ fn test_repeated_refiling() {
         .arg(source.to_str().expect("Test path contains invalid UTF-8"))
         .assert()
         .success();
-    assert!(source.join(LAST_WEEK_BUCKET).join("file.txt").exists());
+    assert!(source.join(CURRENT_WEEK_BUCKET).join("file.txt").exists());
 
     // Make the file older (simulate time passing)
-    let old_path = source.join(LAST_WEEK_BUCKET).join("file.txt");
+    let old_path = source.join(CURRENT_WEEK_BUCKET).join("file.txt");
     let age = SystemTime::now() - Duration::from_secs(LAST_MONTHS_AGE * SECONDS_PER_DAY);
     filetime::set_file_mtime(&old_path, filetime::FileTime::from_system_time(age))
         .expect("Failed to set mtime to simulate aging");
@@ -511,8 +511,8 @@ fn test_repeated_refiling() {
         .assert()
         .success();
     assert!(
-        !source.join(LAST_WEEK_BUCKET).join("file.txt").exists(),
-        "File still in last-week"
+        !source.join(CURRENT_WEEK_BUCKET).join("file.txt").exists(),
+        "File still in current-week"
     );
     assert!(
         source.join(LAST_MONTHS_BUCKET).join("file.txt").exists(),

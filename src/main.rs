@@ -398,36 +398,44 @@ mod tests {
     fn test_pick_bucket_with_default_config() {
         let config = default_config();
 
-        // 0 days -> last-week
+        // 0 days -> current-week
         let bucket = pick_bucket(Duration::from_secs(0), &config);
-        assert_eq!(bucket.name(), "last-week");
+        assert_eq!(bucket.name(), "current-week");
 
-        // 3 days -> last-week
+        // 3 days -> current-week
         let bucket = pick_bucket(Duration::from_secs(3 * 24 * 3600), &config);
-        assert_eq!(bucket.name(), "last-week");
+        assert_eq!(bucket.name(), "current-week");
 
-        // 7 days -> last-week
+        // 7 days -> current-week
         let bucket = pick_bucket(Duration::from_secs(7 * 24 * 3600), &config);
+        assert_eq!(bucket.name(), "current-week");
+
+        // 8 days -> last-week
+        let bucket = pick_bucket(Duration::from_secs(8 * 24 * 3600), &config);
         assert_eq!(bucket.name(), "last-week");
 
-        // 8 days -> current-month
-        let bucket = pick_bucket(Duration::from_secs(8 * 24 * 3600), &config);
+        // 14 days -> last-week
+        let bucket = pick_bucket(Duration::from_secs(14 * 24 * 3600), &config);
+        assert_eq!(bucket.name(), "last-week");
+
+        // 15 days -> current-month
+        let bucket = pick_bucket(Duration::from_secs(15 * 24 * 3600), &config);
         assert_eq!(bucket.name(), "current-month");
 
-        // 28 days -> current-month
-        let bucket = pick_bucket(Duration::from_secs(28 * 24 * 3600), &config);
+        // 30 days -> current-month
+        let bucket = pick_bucket(Duration::from_secs(30 * 24 * 3600), &config);
         assert_eq!(bucket.name(), "current-month");
 
-        // 29 days -> last-months
-        let bucket = pick_bucket(Duration::from_secs(29 * 24 * 3600), &config);
+        // 31 days -> last-months
+        let bucket = pick_bucket(Duration::from_secs(31 * 24 * 3600), &config);
         assert_eq!(bucket.name(), "last-months");
 
-        // 92 days -> last-months
-        let bucket = pick_bucket(Duration::from_secs(92 * 24 * 3600), &config);
+        // 180 days -> last-months
+        let bucket = pick_bucket(Duration::from_secs(180 * 24 * 3600), &config);
         assert_eq!(bucket.name(), "last-months");
 
-        // 93 days -> old-stuff
-        let bucket = pick_bucket(Duration::from_secs(93 * 24 * 3600), &config);
+        // 181 days -> old-stuff
+        let bucket = pick_bucket(Duration::from_secs(181 * 24 * 3600), &config);
         assert_eq!(bucket.name(), "old-stuff");
 
         // 365 days -> old-stuff
@@ -490,16 +498,16 @@ mod tests {
         let config = default_config();
         let target = Path::new("/home/user/documents");
 
-        let bucket = &config.buckets()[0]; // last-week
+        let bucket = &config.buckets()[0]; // current-week
+        assert_eq!(
+            bucket_dest_dir(target, bucket, &config),
+            PathBuf::from("/home/user/documents/refile/current-week")
+        );
+
+        let bucket = &config.buckets()[1]; // last-week
         assert_eq!(
             bucket_dest_dir(target, bucket, &config),
             PathBuf::from("/home/user/documents/refile/last-week")
-        );
-
-        let bucket = &config.buckets()[1]; // current-month
-        assert_eq!(
-            bucket_dest_dir(target, bucket, &config),
-            PathBuf::from("/home/user/documents/refile/current-month")
         );
     }
 
@@ -509,16 +517,16 @@ mod tests {
         let source = Path::new("/home/user/documents/file.txt");
         let target = Path::new("/home/user/archive");
 
-        let bucket = &config.buckets()[0]; // last-week
+        let bucket = &config.buckets()[0]; // current-week
         let dest = compute_dest_path(source, target, bucket, &config);
         assert_eq!(
             dest,
             Some(PathBuf::from(
-                "/home/user/archive/refile/last-week/file.txt"
+                "/home/user/archive/refile/current-week/file.txt"
             ))
         );
 
-        let bucket = &config.buckets()[3]; // old-stuff
+        let bucket = &config.buckets()[4]; // old-stuff
         let dest = compute_dest_path(source, target, bucket, &config);
         assert_eq!(
             dest,

@@ -92,9 +92,10 @@ impl Default for BucketConfig {
         Self {
             base_folder: "refile".to_string(),
             buckets: vec![
-                BucketDef::new("last-week".to_string(), Some(7)),
-                BucketDef::new("current-month".to_string(), Some(28)),
-                BucketDef::new("last-months".to_string(), Some(92)),
+                BucketDef::new("current-week".to_string(), Some(7)),
+                BucketDef::new("last-week".to_string(), Some(14)),
+                BucketDef::new("current-month".to_string(), Some(30)),
+                BucketDef::new("last-months".to_string(), Some(180)),
                 BucketDef::new("old-stuff".to_string(), None),
             ],
         }
@@ -520,7 +521,7 @@ mod tests {
     fn test_default_config() {
         let config = BucketConfig::default();
         assert_eq!(config.base_folder(), "refile");
-        assert_eq!(config.buckets().len(), 4);
+        assert_eq!(config.buckets().len(), 5);
         assert!(config.validate().is_ok());
     }
 
