@@ -1,6 +1,8 @@
 # refile
 
-Automatically organize files by age into time-based buckets.
+Automatically organize files into calendar-based buckets by modification time
+(current week, last week, current month, …). Everything is computed in UTC and
+weeks start on Sunday.
 
 ## Usage
 
@@ -18,20 +20,29 @@ Options:
   -r, --allow-rename                 Allow renaming files to avoid conflicts (default: abort on conflict)
       --allow-dangerous-directories  Allow moving protected directories (root, home, top-level directories) - USE WITH EXTREME CAUTION
       --base-folder <BASE_FOLDER>    Override base folder name (default: "refile")
-      --buckets <BUCKETS>            Override bucket configuration (format: "name1=days1,name2=days2,name3=null")
+      --buckets <BUCKETS>            Override bucket configuration (format: "name1=period1,name2=period2,name3=null")
   -h, --help                         Print help
   -V, --version                      Print version
 ```
 
 ### Default Bucket Configuration
 
-Files and directories are moved into `target/refile/` based on their age (defaults to source if target not specified):
-- `last-week/` - 0-7 days old
-- `current-month/` - 8-28 days old
-- `last-months/` - 29-92 days old
-- `old-stuff/` - 93+ days old
+Files and directories are moved into `target/refile/` based on the calendar
+period their modification time falls into (defaults to source if target not
+specified). Buckets are evaluated top to bottom and the first match wins:
 
-**Note:** Directories are moved as whole units, not recursed into. Running `refile` repeatedly will refile items again based on their current age.
+- `current-week/` - modified since the most recent Sunday 00:00 UTC
+- `last-week/` - modified in the previous Sunday–Saturday week
+- `current-month/` - modified earlier this calendar month (before last week)
+- `last-month/` - modified in the previous calendar month
+- `old-stuff/` - everything older (catch-all)
+
+Because the periods are anchored to the calendar, the bucket an item lands in
+changes as time passes. Periods can also overlap near month boundaries (for
+example, when the current week started in the previous month); the
+earlier-listed bucket wins, which is why bucket order matters.
+
+**Note:** Directories are moved as whole units, not recursed into. Running `refile` repeatedly will refile items again based on their current modification time.
 
 ## Configuration
 
@@ -58,28 +69,46 @@ refile config validate
 
 ### Configuration File
 
-You can customize bucket behavior via a configuration file at `~/.config/refile/config.toml`:
+You can customize bucket behavior via a configuration file at `~/.config/refile/config.toml`.
+
+Buckets are an **ordered** list of `[[default.buckets]]` tables, each with a
+`name` (the folder created) and a `period` (what it captures). The order is
+significant: the first matching bucket wins, and the last bucket must be the
+catch-all (`period = "null"`).
 
 ```toml
 # Default configuration applied to all directories
 [default]
 base_folder = "refile"
 
-[default.buckets]
-recent = 7
-current = 30
-archive = null  # null means catch-all for all older files
+[[default.buckets]]
+name = "current-week"
+period = "current-week"
+
+[[default.buckets]]
+name = "current-month"
+period = "current-month"
+
+[[default.buckets]]
+name = "archive"
+period = "null"   # null means catch-all for all older files (must be last)
 
 # Directory-specific rules
 [[rules]]
 path = "~/downloads"
 base_folder = "sorted"
 
-[rules.buckets]
-today = 1
-week = 7
-old = null
+[[rules.buckets]]
+name = "this-week"
+period = "current-week"
+
+[[rules.buckets]]
+name = "old"
+period = "null"
 ```
+
+**Valid periods:** `current-week`, `last-week`, `current-month`, `last-month`,
+and `null` (catch-all).
 
 ### Configuration Precedence
 
@@ -95,16 +124,16 @@ Override bucket configuration on the command line:
 
 ```bash
 # Simple 3-bucket setup
-refile --buckets "recent=7,month=30,old=null" ~/downloads
+refile --buckets "recent=current-week,month=current-month,old=null" ~/downloads
 
 # Custom base folder name
 refile --base-folder archive ~/documents
 ```
 
-**Format:** `name1=days1,name2=days2,name3=null`
+**Format:** `name1=period1,name2=period2,name3=null`
 - Bucket names cannot contain `/` or `\`
-- Ages must be in ascending order
-- At least one bucket must have `null` (catch-all)
+- Newest periods first; the first matching bucket wins
+- The last bucket must be the catch-all (`null`)
 
 ## Example
 
@@ -120,11 +149,11 @@ refile --base-folder archive ~/documents
 $ refile ~/downloads
 ```
 
-**After:**
+**After** (assuming today is mid-month):
 ```
 ~/downloads/
 └── refile/
-    ├── last-week/report.pdf
+    ├── current-week/report.pdf
     ├── current-month/vacation.jpg
     └── old-stuff/old-backup.tar
 ```

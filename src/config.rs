@@ -1,5 +1,4 @@
 use serde::Deserialize;
-use std::collections::BTreeMap;
 use std::fmt::Write as FmtWrite;
 use std::fs;
 use std::io;
@@ -34,17 +33,37 @@ pub enum ConfigError {
     MissingConfig(String),
 }
 
-/// Represents a single bucket configuration with name and maximum age.
-#[derive(Debug, Clone, PartialEq)]
+/// The calendar period a bucket captures.
+///
+/// Each variant maps to a *start instant* computed relative to "now" (see
+/// `crate::core`). A file belongs to a bucket when its modification time is at
+/// or after that start instant. Buckets are evaluated in declaration order and
+/// the first match wins, so the newest periods must be listed first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Boundary {
+    /// From the most recent Sunday 00:00 UTC up to now.
+    CurrentWeek,
+    /// The previous calendar week (Sunday–Saturday) before the current week.
+    LastWeek,
+    /// From the first day of the current month 00:00 UTC.
+    CurrentMonth,
+    /// From the first day of the previous month 00:00 UTC.
+    LastMonth,
+    /// Catch-all: matches everything older than the other buckets.
+    CatchAll,
+}
+
+/// Represents a single bucket configuration with a name and a calendar period.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BucketDef {
     name: String,
-    max_age_days: Option<u64>, // None means infinity (catch-all)
+    boundary: Boundary,
 }
 
 impl BucketDef {
     /// Creates a new bucket definition.
-    pub fn new(name: String, max_age_days: Option<u64>) -> Self {
-        Self { name, max_age_days }
+    pub fn new(name: String, boundary: Boundary) -> Self {
+        Self { name, boundary }
     }
 
     /// Returns the bucket name.
@@ -52,9 +71,14 @@ impl BucketDef {
         &self.name
     }
 
-    /// Returns the maximum age in days, or None for catch-all buckets.
-    pub fn max_age_days(&self) -> Option<u64> {
-        self.max_age_days
+    /// Returns the calendar period this bucket captures.
+    pub fn boundary(&self) -> &Boundary {
+        &self.boundary
+    }
+
+    /// Returns whether this is the catch-all bucket.
+    pub fn is_catch_all(&self) -> bool {
+        self.boundary == Boundary::CatchAll
     }
 }
 
@@ -92,11 +116,11 @@ impl Default for BucketConfig {
         Self {
             base_folder: "refile".to_string(),
             buckets: vec![
-                BucketDef::new("current-week".to_string(), Some(7)),
-                BucketDef::new("last-week".to_string(), Some(14)),
-                BucketDef::new("current-month".to_string(), Some(30)),
-                BucketDef::new("last-months".to_string(), Some(180)),
-                BucketDef::new("old-stuff".to_string(), None),
+                BucketDef::new("current-week".to_string(), Boundary::CurrentWeek),
+                BucketDef::new("last-week".to_string(), Boundary::LastWeek),
+                BucketDef::new("current-month".to_string(), Boundary::CurrentMonth),
+                BucketDef::new("last-month".to_string(), Boundary::LastMonth),
+                BucketDef::new("old-stuff".to_string(), Boundary::CatchAll),
             ],
         }
     }
@@ -105,23 +129,19 @@ impl Default for BucketConfig {
 impl BucketConfig {
     /// Validates the bucket configuration.
     ///
+    /// Buckets are evaluated in declaration order and the first match wins, so
+    /// ordering is meaningful but not statically checkable (calendar periods can
+    /// overlap depending on the current date). Validation therefore only ensures
+    /// the structure is sound.
+    ///
     /// Returns an error if:
     /// - No buckets are defined
-    /// - Age thresholds are not in ascending order
-    /// - No catch-all bucket (with None age) exists
-    /// - Bucket names contain invalid characters
+    /// - The catch-all (null) bucket is missing or is not the last bucket
+    /// - Bucket names are empty or contain invalid characters
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.buckets.is_empty() {
             return Err(ConfigError::InvalidConfig(
                 "At least one bucket must be defined".to_string(),
-            ));
-        }
-
-        // Check for catch-all bucket
-        if !self.buckets.iter().any(|b| b.max_age_days.is_none()) {
-            return Err(ConfigError::InvalidConfig(
-                "At least one bucket must have no age limit (null) to catch all old files"
-                    .to_string(),
             ));
         }
 
@@ -141,22 +161,19 @@ impl BucketConfig {
             }
         }
 
-        // Check that ages are in ascending order (excluding None)
-        let mut prev_age: Option<u64> = None;
-        for bucket in &self.buckets {
-            if let Some(age) = bucket.max_age_days {
-                if let Some(prev) = prev_age
-                    && age <= prev
-                {
-                    return Err(ConfigError::InvalidConfig(format!(
-                        "Bucket ages must be in ascending order: {age} <= {prev}"
-                    )));
-                }
-                prev_age = Some(age);
-            }
+        // The catch-all must exist and be the final bucket; anything declared
+        // after it would be unreachable.
+        match self.buckets.iter().position(BucketDef::is_catch_all) {
+            None => Err(ConfigError::InvalidConfig(
+                "At least one bucket must be the catch-all (null) to catch everything older"
+                    .to_string(),
+            )),
+            Some(idx) if idx != self.buckets.len() - 1 => Err(ConfigError::InvalidConfig(
+                "The catch-all (null) bucket must be the last bucket; buckets after it are unreachable"
+                    .to_string(),
+            )),
+            Some(_) => Ok(()),
         }
-
-        Ok(())
     }
 }
 
@@ -176,7 +193,7 @@ pub struct RefileConfigFile {
 struct DefaultConfig {
     #[serde(default = "default_base_folder")]
     base_folder: String,
-    buckets: BTreeMap<String, Option<u64>>,
+    buckets: Vec<BucketEntry>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -184,18 +201,53 @@ struct RuleConfig {
     path: String,
     #[serde(default)]
     base_folder: Option<String>,
-    buckets: BTreeMap<String, Option<u64>>,
+    buckets: Vec<BucketEntry>,
+}
+
+/// A single bucket entry as written in the config file.
+///
+/// Declared as an ordered array of tables (`[[default.buckets]]`) so that the
+/// declaration order — which determines bucket priority — is preserved.
+#[derive(Debug, Deserialize)]
+struct BucketEntry {
+    name: String,
+    period: String,
 }
 
 fn default_base_folder() -> String {
     "refile".to_string()
 }
 
-/// Converts a `BTreeMap` of bucket definitions to a Vec<BucketDef>.
-fn buckets_from_map(map: BTreeMap<String, Option<u64>>) -> Vec<BucketDef> {
-    map.into_iter()
-        .map(|(name, max_age_days)| BucketDef::new(name, max_age_days))
+/// Converts the ordered config-file bucket entries to `Vec<BucketDef>`,
+/// parsing each `period` keyword into a [`Boundary`].
+fn buckets_from_entries(entries: &[BucketEntry]) -> Result<Vec<BucketDef>, ConfigError> {
+    entries
+        .iter()
+        .map(|entry| {
+            Ok(BucketDef::new(
+                entry.name.clone(),
+                parse_period(&entry.period)?,
+            ))
+        })
         .collect()
+}
+
+/// Parses a period keyword into a [`Boundary`].
+///
+/// Accepted keywords: `current-week`, `last-week`, `current-month`,
+/// `last-month`, and `null` (alias `catch-all`) for the catch-all bucket.
+pub fn parse_period(spec: &str) -> Result<Boundary, ConfigError> {
+    match spec.trim() {
+        "current-week" => Ok(Boundary::CurrentWeek),
+        "last-week" => Ok(Boundary::LastWeek),
+        "current-month" => Ok(Boundary::CurrentMonth),
+        "last-month" => Ok(Boundary::LastMonth),
+        "null" | "catch-all" => Ok(Boundary::CatchAll),
+        other => Err(ConfigError::InvalidBucketSpec(format!(
+            "Unknown period '{other}'. Valid periods: current-week, last-week, \
+             current-month, last-month, null"
+        ))),
+    }
 }
 
 /// Loads the refile configuration from the default config file location.
@@ -254,7 +306,7 @@ pub fn resolve_bucket_config(
     if let Some(cfg_file) = config_file {
         if let Some(default) = &cfg_file.default {
             config.base_folder.clone_from(&default.base_folder);
-            config.buckets = buckets_from_map(default.buckets.clone());
+            config.buckets = buckets_from_entries(&default.buckets)?;
         }
 
         // Apply matching rule
@@ -262,7 +314,7 @@ pub fn resolve_bucket_config(
             if let Some(base) = &rule.base_folder {
                 config.base_folder.clone_from(base);
             }
-            config.buckets = buckets_from_map(rule.buckets.clone());
+            config.buckets = buckets_from_entries(&rule.buckets)?;
         }
     }
 
@@ -313,8 +365,8 @@ fn expand_tilde(path: &str) -> PathBuf {
 
 /// Parses a bucket specification string from CLI.
 ///
-/// Format: "name1=days1,name2=days2,name3=null"
-/// Example: "today=1,week=7,old=null"
+/// Format: "name1=period1,name2=period2,name3=null"
+/// Example: "current-week=current-week,recent=last-week,old=null"
 pub fn parse_buckets_spec(spec: &str) -> Result<Vec<BucketDef>, ConfigError> {
     let mut buckets = Vec::new();
 
@@ -332,7 +384,7 @@ pub fn parse_buckets_spec(spec: &str) -> Result<Vec<BucketDef>, ConfigError> {
             })?
             .trim();
 
-        let age_str = split
+        let period_str = split
             .next()
             .ok_or_else(|| {
                 ConfigError::InvalidBucketSpec(format!(
@@ -341,15 +393,9 @@ pub fn parse_buckets_spec(spec: &str) -> Result<Vec<BucketDef>, ConfigError> {
             })?
             .trim();
 
-        let max_age_days = if age_str == "null" {
-            None
-        } else {
-            Some(age_str.parse::<u64>().map_err(|e| {
-                ConfigError::InvalidBucketSpec(format!("Invalid age value '{age_str}': {e}"))
-            })?)
-        };
+        let boundary = parse_period(period_str)?;
 
-        buckets.push(BucketDef::new(name.to_string(), max_age_days));
+        buckets.push(BucketDef::new(name.to_string(), boundary));
     }
 
     if buckets.is_empty() {
@@ -458,17 +504,9 @@ pub fn validate_config_file() -> Result<String, ConfigError> {
                     .expect("Writing to String should not fail");
                 summary.push_str("  Buckets:\n");
 
-                for (name, age) in &default.buckets {
-                    match age {
-                        Some(days) => {
-                            writeln!(summary, "    - {name} = {days} days")
-                                .expect("Writing to String should not fail");
-                        }
-                        None => {
-                            writeln!(summary, "    - {name} = catch-all")
-                                .expect("Writing to String should not fail");
-                        }
-                    }
+                for entry in &default.buckets {
+                    writeln!(summary, "    - {} = {}", entry.name, entry.period)
+                        .expect("Writing to String should not fail");
                 }
                 summary.push('\n');
             }
@@ -486,17 +524,9 @@ pub fn validate_config_file() -> Result<String, ConfigError> {
                     writeln!(summary, "    Base folder: {base_folder}")
                         .expect("Writing to String should not fail");
                     summary.push_str("    Buckets:\n");
-                    for (name, age) in &rule.buckets {
-                        match age {
-                            Some(days) => {
-                                writeln!(summary, "      - {name} = {days} days")
-                                    .expect("Writing to String should not fail");
-                            }
-                            None => {
-                                writeln!(summary, "      - {name} = catch-all")
-                                    .expect("Writing to String should not fail");
-                            }
-                        }
+                    for entry in &rule.buckets {
+                        writeln!(summary, "      - {} = {}", entry.name, entry.period)
+                            .expect("Writing to String should not fail");
                     }
                 }
             }
@@ -522,6 +552,8 @@ mod tests {
         let config = BucketConfig::default();
         assert_eq!(config.base_folder(), "refile");
         assert_eq!(config.buckets().len(), 5);
+        assert_eq!(config.buckets()[0].boundary(), &Boundary::CurrentWeek);
+        assert_eq!(config.buckets()[4].boundary(), &Boundary::CatchAll);
         assert!(config.validate().is_ok());
     }
 
@@ -539,21 +571,20 @@ mod tests {
         let config = BucketConfig {
             base_folder: "test".to_string(),
             buckets: vec![
-                BucketDef::new("bucket1".to_string(), Some(7)),
-                BucketDef::new("bucket2".to_string(), Some(14)),
+                BucketDef::new("bucket1".to_string(), Boundary::CurrentWeek),
+                BucketDef::new("bucket2".to_string(), Boundary::LastWeek),
             ],
         };
         assert!(config.validate().is_err());
     }
 
     #[test]
-    fn test_validate_ages_not_ascending() {
+    fn test_validate_catchall_must_be_last() {
         let config = BucketConfig {
             base_folder: "test".to_string(),
             buckets: vec![
-                BucketDef::new("bucket1".to_string(), Some(14)),
-                BucketDef::new("bucket2".to_string(), Some(7)),
-                BucketDef::new("bucket3".to_string(), None),
+                BucketDef::new("everything".to_string(), Boundary::CatchAll),
+                BucketDef::new("unreachable".to_string(), Boundary::CurrentWeek),
             ],
         };
         assert!(config.validate().is_err());
@@ -564,30 +595,45 @@ mod tests {
         let config = BucketConfig {
             base_folder: "test".to_string(),
             buckets: vec![
-                BucketDef::new("bucket/invalid".to_string(), Some(7)),
-                BucketDef::new("old".to_string(), None),
+                BucketDef::new("bucket/invalid".to_string(), Boundary::CurrentWeek),
+                BucketDef::new("old".to_string(), Boundary::CatchAll),
             ],
         };
         assert!(config.validate().is_err());
     }
 
     #[test]
+    fn test_parse_period() {
+        assert_eq!(parse_period("current-week").unwrap(), Boundary::CurrentWeek);
+        assert_eq!(parse_period("last-week").unwrap(), Boundary::LastWeek);
+        assert_eq!(
+            parse_period(" current-month ").unwrap(),
+            Boundary::CurrentMonth
+        );
+        assert_eq!(parse_period("last-month").unwrap(), Boundary::LastMonth);
+        assert_eq!(parse_period("null").unwrap(), Boundary::CatchAll);
+        assert_eq!(parse_period("catch-all").unwrap(), Boundary::CatchAll);
+        assert!(parse_period("7").is_err());
+        assert!(parse_period("yesterday").is_err());
+    }
+
+    #[test]
     fn test_parse_buckets_spec() {
-        let spec = "today=1,week=7,old=null";
+        let spec = "recent=current-week,prev=last-week,old=null";
         let buckets = parse_buckets_spec(spec).unwrap();
 
         assert_eq!(buckets.len(), 3);
-        assert_eq!(buckets[0].name(), "today");
-        assert_eq!(buckets[0].max_age_days(), Some(1));
-        assert_eq!(buckets[1].name(), "week");
-        assert_eq!(buckets[1].max_age_days(), Some(7));
+        assert_eq!(buckets[0].name(), "recent");
+        assert_eq!(buckets[0].boundary(), &Boundary::CurrentWeek);
+        assert_eq!(buckets[1].name(), "prev");
+        assert_eq!(buckets[1].boundary(), &Boundary::LastWeek);
         assert_eq!(buckets[2].name(), "old");
-        assert_eq!(buckets[2].max_age_days(), None);
+        assert_eq!(buckets[2].boundary(), &Boundary::CatchAll);
     }
 
     #[test]
     fn test_parse_buckets_spec_with_spaces() {
-        let spec = " today = 1 , week = 7 , old = null ";
+        let spec = " recent = current-week , prev = last-week , old = null ";
         let buckets = parse_buckets_spec(spec).unwrap();
         assert_eq!(buckets.len(), 3);
     }
@@ -595,7 +641,7 @@ mod tests {
     #[test]
     fn test_parse_buckets_spec_invalid() {
         assert!(parse_buckets_spec("invalid").is_err());
-        assert!(parse_buckets_spec("name=abc").is_err());
+        assert!(parse_buckets_spec("name=7").is_err());
         assert!(parse_buckets_spec("").is_err());
     }
 

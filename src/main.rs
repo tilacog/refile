@@ -2,20 +2,22 @@ mod config;
 mod core;
 mod filesystem;
 
+use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use config::BucketConfig;
 use core::{compute_dest_path, is_protected_directory, paths_equal, pick_bucket, refile_base_path};
 use filesystem::{
-    collect_items_to_process, create_bucket_dirs, find_unique_dest, get_file_age,
+    collect_items_to_process, create_bucket_dirs, find_unique_dest, get_file_mtime,
     move_cross_filesystem, print_dry_run_dirs,
 };
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// Organize files by age into categorized subdirectories
+/// Organize files into calendar-based subdirectories by modification time
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
+#[command(args_conflicts_with_subcommands = true)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -49,10 +51,10 @@ enum ConfigCommand {
     Validate,
 }
 
-#[derive(Parser, Debug)]
+#[derive(clap::Args, Debug)]
 struct RefileArgs {
     /// Source directory to scan for files and directories
-    source_dir: PathBuf,
+    source_dir: Option<PathBuf>,
 
     /// Target directory where refile/* subdirectories will be created (defaults to `source_dir`)
     target_dir: Option<PathBuf>,
@@ -73,7 +75,7 @@ struct RefileArgs {
     #[arg(long)]
     base_folder: Option<String>,
 
-    /// Override bucket configuration (format: "name1=days1,name2=days2,name3=null")
+    /// Override bucket configuration (format: "name1=period1,name2=period2,name3=null"; periods: current-week, last-week, current-month, last-month, null)
     #[arg(long)]
     buckets: Option<String>,
 }
@@ -111,12 +113,7 @@ fn main() -> io::Result<()> {
     }
 
     // Handle regular refile operation
-    let cfg = cli.refile.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Missing required argument: source_dir\n\nUsage: refile <SOURCE_DIR> [TARGET_DIR]\n\nFor more information, try '--help'",
-        )
-    })?;
+    let cfg = cli.refile.ok_or_else(missing_source_dir_err)?;
 
     run_refile(&cfg)
 }
@@ -167,9 +164,38 @@ fn handle_config_command(command: &ConfigCommand) -> io::Result<()> {
     }
 }
 
+/// Resolves the reference instant used to compute calendar boundaries.
+///
+/// Defaults to the current time. The `REFILE_NOW` environment variable (an
+/// RFC 3339 timestamp, e.g. `2026-06-17T12:00:00Z`) overrides it, which makes
+/// the date-dependent bucketing deterministic for tests.
+fn resolve_now() -> io::Result<DateTime<Utc>> {
+    match std::env::var("REFILE_NOW") {
+        Ok(raw) => DateTime::parse_from_rfc3339(raw.trim())
+            .map(|dt| dt.with_timezone(&Utc))
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Invalid REFILE_NOW value '{raw}': {e} (expected RFC 3339, e.g. 2026-06-17T12:00:00Z)"),
+                )
+            }),
+        Err(_) => Ok(Utc::now()),
+    }
+}
+
+/// Builds the error returned when a refile operation is requested without a source directory.
+fn missing_source_dir_err() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "Missing required argument: source_dir\n\nUsage: refile <SOURCE_DIR> [TARGET_DIR]\n\nFor more information, try '--help'",
+    )
+}
+
 /// Run the regular refile operation
 fn run_refile(cfg: &RefileArgs) -> io::Result<()> {
-    let target_dir = cfg.target_dir.as_ref().unwrap_or(&cfg.source_dir);
+    let source_dir = cfg.source_dir.as_ref().ok_or_else(missing_source_dir_err)?;
+    let target_dir = cfg.target_dir.as_ref().unwrap_or(source_dir);
+    let now = resolve_now()?;
 
     // Warn about dangerous directories flag
     if cfg.allow_dangerous_directories {
@@ -188,7 +214,7 @@ fn run_refile(cfg: &RefileArgs) -> io::Result<()> {
 
     // Resolve bucket configuration
     let bucket_config = config::resolve_bucket_config(
-        &cfg.source_dir,
+        source_dir,
         config_file.as_ref(),
         cfg.base_folder.as_deref(),
         cfg.buckets.as_deref(),
@@ -205,12 +231,12 @@ fn run_refile(cfg: &RefileArgs) -> io::Result<()> {
     }
 
     // Collect all items to process
-    let items = collect_items_to_process(&cfg.source_dir, &refile_base, &bucket_config)?;
+    let items = collect_items_to_process(source_dir, &refile_base, &bucket_config)?;
 
     // Plan actions for each item
     let actions: Vec<_> = items
         .into_iter()
-        .filter_map(|path| plan_action(&path, target_dir, cfg, &bucket_config).transpose())
+        .filter_map(|path| plan_action(&path, target_dir, cfg, &bucket_config, now).transpose())
         .collect::<io::Result<_>>()?;
 
     // Execute actions
@@ -229,7 +255,7 @@ fn run_refile(cfg: &RefileArgs) -> io::Result<()> {
 ///
 /// This function:
 /// 1. Checks if the path is a protected directory
-/// 2. Reads the item's age from its metadata
+/// 2. Reads the item's modification time from its metadata
 /// 3. Determines the appropriate bucket
 /// 4. Computes the destination path
 /// 5. Checks for conflicts and handles them based on configuration
@@ -241,6 +267,7 @@ fn run_refile(cfg: &RefileArgs) -> io::Result<()> {
 /// * `target_dir` - Target directory for refile structure
 /// * `cfg` - Configuration including target directory and conflict handling
 /// * `bucket_config` - The bucket configuration to use
+/// * `now` - The reference instant calendar boundaries are computed from (UTC)
 ///
 /// # Returns
 ///
@@ -260,6 +287,7 @@ fn plan_action(
     target_dir: &Path,
     cfg: &RefileArgs,
     bucket_config: &BucketConfig,
+    now: DateTime<Utc>,
 ) -> io::Result<Option<FileAction>> {
     // Check if this is a protected directory
     if is_protected_directory(path) && !cfg.allow_dangerous_directories {
@@ -273,19 +301,19 @@ fn plan_action(
         ));
     }
 
-    // Get file age
-    let age = match get_file_age(path) {
-        Ok(a) => a,
+    // Get file modification time
+    let mtime = match get_file_mtime(path) {
+        Ok(t) => DateTime::<Utc>::from(t),
         Err(e) => {
             return Ok(Some(FileAction::Skip {
                 path: path.to_path_buf(),
-                reason: format!("cannot get age: {e}"),
+                reason: format!("cannot get modification time: {e}"),
             }));
         }
     };
 
     // Determine bucket
-    let bucket = pick_bucket(age, bucket_config);
+    let bucket = pick_bucket(mtime, now, bucket_config);
 
     // Compute destination path
     let Some(dest_path) = compute_dest_path(path, target_dir, bucket, bucket_config) else {
@@ -382,65 +410,61 @@ fn execute_action(action: FileAction, dry_run: bool) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::BucketDef;
+    use crate::config::{Boundary, BucketDef};
     use crate::core::{
         bucket_dest_dir, compute_dest_path, generate_unique_name, is_bucket_dir,
         is_protected_directory, paths_equal, pick_bucket, refile_base_path,
     };
+    use chrono::{DateTime, TimeZone, Utc};
     use std::env;
-    use std::time::Duration;
 
     fn default_config() -> BucketConfig {
         BucketConfig::default()
     }
 
+    /// Builds a UTC instant from a date and `HH:MM`.
+    fn at(y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(y, m, d, h, min, 0).unwrap()
+    }
+
     #[test]
     fn test_pick_bucket_with_default_config() {
         let config = default_config();
+        // Reference instant: Wednesday 2026-06-17. The week starts Sunday 2026-06-14.
+        // Boundaries: current-week=Jun-14, last-week=Jun-07,
+        //             current-month=Jun-01, last-month=May-01.
+        let now = at(2026, 6, 17, 12, 0);
+        let pick = |mtime| pick_bucket(mtime, now, &config).name();
 
-        // 0 days -> current-week
-        let bucket = pick_bucket(Duration::from_secs(0), &config);
-        assert_eq!(bucket.name(), "current-week");
+        assert_eq!(pick(at(2026, 6, 17, 9, 0)), "current-week");
+        assert_eq!(pick(at(2026, 6, 16, 0, 0)), "current-week");
+        assert_eq!(pick(at(2026, 6, 14, 0, 0)), "current-week"); // boundary is inclusive
+        assert_eq!(pick(at(2026, 6, 13, 23, 59)), "last-week");
+        assert_eq!(pick(at(2026, 6, 7, 0, 0)), "last-week"); // boundary is inclusive
+        assert_eq!(pick(at(2026, 6, 6, 12, 0)), "current-month");
+        assert_eq!(pick(at(2026, 6, 1, 0, 0)), "current-month"); // boundary is inclusive
+        assert_eq!(pick(at(2026, 5, 31, 23, 59)), "last-month");
+        assert_eq!(pick(at(2026, 5, 1, 0, 0)), "last-month"); // boundary is inclusive
+        assert_eq!(pick(at(2026, 4, 30, 23, 59)), "old-stuff");
+        assert_eq!(pick(at(2024, 1, 1, 0, 0)), "old-stuff");
+    }
 
-        // 3 days -> current-week
-        let bucket = pick_bucket(Duration::from_secs(3 * 24 * 3600), &config);
-        assert_eq!(bucket.name(), "current-week");
+    #[test]
+    fn test_pick_bucket_overlap_when_week_spans_month_boundary() {
+        // Tuesday 2026-06-02; the current week started Sunday 2026-05-31 (in May).
+        // current-week=May-31, last-week=May-24, current-month=Jun-01, last-month=May-01.
+        // current-month captures nothing this week (all of June so far is already in
+        // the current week) — the accepted overlap case.
+        let config = default_config();
+        let now = at(2026, 6, 2, 12, 0);
+        let pick = |mtime| pick_bucket(mtime, now, &config).name();
 
-        // 7 days -> current-week
-        let bucket = pick_bucket(Duration::from_secs(7 * 24 * 3600), &config);
-        assert_eq!(bucket.name(), "current-week");
-
-        // 8 days -> last-week
-        let bucket = pick_bucket(Duration::from_secs(8 * 24 * 3600), &config);
-        assert_eq!(bucket.name(), "last-week");
-
-        // 14 days -> last-week
-        let bucket = pick_bucket(Duration::from_secs(14 * 24 * 3600), &config);
-        assert_eq!(bucket.name(), "last-week");
-
-        // 15 days -> current-month
-        let bucket = pick_bucket(Duration::from_secs(15 * 24 * 3600), &config);
-        assert_eq!(bucket.name(), "current-month");
-
-        // 30 days -> current-month
-        let bucket = pick_bucket(Duration::from_secs(30 * 24 * 3600), &config);
-        assert_eq!(bucket.name(), "current-month");
-
-        // 31 days -> last-months
-        let bucket = pick_bucket(Duration::from_secs(31 * 24 * 3600), &config);
-        assert_eq!(bucket.name(), "last-months");
-
-        // 180 days -> last-months
-        let bucket = pick_bucket(Duration::from_secs(180 * 24 * 3600), &config);
-        assert_eq!(bucket.name(), "last-months");
-
-        // 181 days -> old-stuff
-        let bucket = pick_bucket(Duration::from_secs(181 * 24 * 3600), &config);
-        assert_eq!(bucket.name(), "old-stuff");
-
-        // 365 days -> old-stuff
-        let bucket = pick_bucket(Duration::from_secs(365 * 24 * 3600), &config);
-        assert_eq!(bucket.name(), "old-stuff");
+        assert_eq!(pick(at(2026, 6, 1, 12, 0)), "current-week");
+        assert_eq!(pick(at(2026, 5, 31, 0, 0)), "current-week");
+        assert_eq!(pick(at(2026, 5, 28, 0, 0)), "last-week");
+        assert_eq!(pick(at(2026, 5, 24, 0, 0)), "last-week");
+        assert_eq!(pick(at(2026, 5, 20, 0, 0)), "last-month");
+        assert_eq!(pick(at(2026, 4, 15, 0, 0)), "old-stuff");
     }
 
     #[test]
@@ -448,35 +472,18 @@ mod tests {
         let config = BucketConfig::new_for_test(
             "sorted".to_string(),
             vec![
-                BucketDef::new("today".to_string(), Some(1)),
-                BucketDef::new("week".to_string(), Some(7)),
-                BucketDef::new("old".to_string(), None),
+                BucketDef::new("recent".to_string(), Boundary::CurrentWeek),
+                BucketDef::new("month".to_string(), Boundary::CurrentMonth),
+                BucketDef::new("old".to_string(), Boundary::CatchAll),
             ],
         );
+        // current-week=Jun-14, current-month=Jun-01.
+        let now = at(2026, 6, 17, 12, 0);
+        let pick = |mtime| pick_bucket(mtime, now, &config).name();
 
-        // 0 days -> today
-        let bucket = pick_bucket(Duration::from_secs(0), &config);
-        assert_eq!(bucket.name(), "today");
-
-        // 1 day -> today
-        let bucket = pick_bucket(Duration::from_secs(24 * 3600), &config);
-        assert_eq!(bucket.name(), "today");
-
-        // 2 days -> week
-        let bucket = pick_bucket(Duration::from_secs(2 * 24 * 3600), &config);
-        assert_eq!(bucket.name(), "week");
-
-        // 7 days -> week
-        let bucket = pick_bucket(Duration::from_secs(7 * 24 * 3600), &config);
-        assert_eq!(bucket.name(), "week");
-
-        // 8 days -> old
-        let bucket = pick_bucket(Duration::from_secs(8 * 24 * 3600), &config);
-        assert_eq!(bucket.name(), "old");
-
-        // 100 days -> old
-        let bucket = pick_bucket(Duration::from_secs(100 * 24 * 3600), &config);
-        assert_eq!(bucket.name(), "old");
+        assert_eq!(pick(at(2026, 6, 16, 0, 0)), "recent");
+        assert_eq!(pick(at(2026, 6, 10, 0, 0)), "month"); // older than current week, same month
+        assert_eq!(pick(at(2026, 5, 15, 0, 0)), "old");
     }
 
     #[test]
@@ -487,7 +494,7 @@ mod tests {
 
         let custom_config = BucketConfig::new_for_test(
             "archive".to_string(),
-            vec![BucketDef::new("old".to_string(), None)],
+            vec![BucketDef::new("old".to_string(), Boundary::CatchAll)],
         );
         let base = refile_base_path(Path::new("/home/user/documents"), &custom_config);
         assert_eq!(base, PathBuf::from("/home/user/documents/archive"));
@@ -597,9 +604,10 @@ mod tests {
         let config = default_config();
 
         // Valid bucket directories - using string slices
+        assert!(is_bucket_dir("/home/user/refile/current-week", &config));
         assert!(is_bucket_dir("/home/user/refile/last-week", &config));
         assert!(is_bucket_dir("/home/user/refile/current-month", &config));
-        assert!(is_bucket_dir("/home/user/refile/last-months", &config));
+        assert!(is_bucket_dir("/home/user/refile/last-month", &config));
         assert!(is_bucket_dir("/home/user/refile/old-stuff", &config));
 
         // Valid bucket directories - different paths
@@ -630,8 +638,8 @@ mod tests {
         let config = BucketConfig::new_for_test(
             "archive".to_string(),
             vec![
-                BucketDef::new("recent".to_string(), Some(7)),
-                BucketDef::new("old".to_string(), None),
+                BucketDef::new("recent".to_string(), Boundary::CurrentWeek),
+                BucketDef::new("old".to_string(), Boundary::CatchAll),
             ],
         );
 
@@ -708,7 +716,7 @@ mod tests {
     fn test_plan_action_rejects_protected_dir_by_default() {
         // Test that protected directories are rejected when allow_dangerous_directories is false
         let cfg = RefileArgs {
-            source_dir: PathBuf::from("/tmp"),
+            source_dir: Some(PathBuf::from("/tmp")),
             target_dir: None,
             dry_run: false,
             allow_rename: false,
@@ -722,7 +730,7 @@ mod tests {
         let protected_path = Path::new("/tmp"); // /tmp is a protected top-level directory
 
         // This should return an error because /tmp is protected and flag is false
-        let result = plan_action(protected_path, target, &cfg, &bucket_config);
+        let result = plan_action(protected_path, target, &cfg, &bucket_config, Utc::now());
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
     }
@@ -731,7 +739,7 @@ mod tests {
     fn test_plan_action_allows_protected_dir_with_flag() {
         // Test that protected directories are allowed when allow_dangerous_directories is true
         let cfg = RefileArgs {
-            source_dir: PathBuf::from("/tmp"),
+            source_dir: Some(PathBuf::from("/tmp")),
             target_dir: None,
             dry_run: false,
             allow_rename: false,
@@ -746,7 +754,7 @@ mod tests {
 
         // This should NOT return a permission denied error because the flag is true
         // It may return other errors or succeed, but NOT PermissionDenied for protected dir
-        let result = plan_action(protected_path, target, &cfg, &bucket_config);
+        let result = plan_action(protected_path, target, &cfg, &bucket_config, Utc::now());
 
         // If there's an error, it should not be PermissionDenied
         if let Err(e) = result {
@@ -762,7 +770,7 @@ mod tests {
     fn test_plan_action_allows_nonprotected_dirs_regardless_of_flag() {
         // Test that non-protected directories work with both flag values
         let cfg_false = RefileArgs {
-            source_dir: PathBuf::from("/tmp/test"),
+            source_dir: Some(PathBuf::from("/tmp/test")),
             target_dir: None,
             dry_run: false,
             allow_rename: false,
@@ -772,7 +780,7 @@ mod tests {
         };
 
         let cfg_true = RefileArgs {
-            source_dir: PathBuf::from("/tmp/test"),
+            source_dir: Some(PathBuf::from("/tmp/test")),
             target_dir: None,
             dry_run: false,
             allow_rename: false,
@@ -789,8 +797,14 @@ mod tests {
 
         // Both should NOT return PermissionDenied for protected directories
         // (they may fail for other reasons like file not found, but not for being protected)
-        let result_false = plan_action(non_protected, target, &cfg_false, &bucket_config);
-        let result_true = plan_action(non_protected, target, &cfg_true, &bucket_config);
+        let result_false = plan_action(
+            non_protected,
+            target,
+            &cfg_false,
+            &bucket_config,
+            Utc::now(),
+        );
+        let result_true = plan_action(non_protected, target, &cfg_true, &bucket_config, Utc::now());
 
         // Neither should fail with PermissionDenied for protected directory
         if let Err(e) = result_false {

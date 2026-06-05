@@ -4,11 +4,22 @@
 //!
 //! These integration tests verify end-to-end behavior through the CLI interface to ensure:
 //!
-//! 1. **Correctness**: Files are categorized and moved to correct age-based buckets
+//! 1. **Correctness**: Files are categorized and moved to correct calendar buckets
 //! 2. **Safety**: Dry-run mode never modifies the filesystem
 //! 3. **Conflict handling**: Rename logic prevents data loss when conflicts occur
 //! 4. **Idempotency**: Repeated refiling produces correct results as files age
 //! 5. **Configuration flexibility**: Custom buckets and folders work correctly
+//!
+//! # Time determinism
+//!
+//! Bucketing is calendar-aware (current week, last week, current month, …), so the
+//! bucket a file lands in depends on *when* the tool runs. Tests stay deterministic
+//! in one of two ways:
+//!
+//! - Pin the reference instant with the `REFILE_NOW` env var and give files absolute
+//!   modification times (see [`create_file_on`]). Used by the comprehensive test.
+//! - Use ages that always map to the same bucket regardless of the date: age 0 is
+//!   always `current-week`; an age older than two months is always `old-stuff`.
 //!
 //! Each test represents a real user scenario and documents expected behavior.
 //! Tests use temporary directories to ensure isolation and avoid side effects.
@@ -23,20 +34,25 @@ use std::time::{Duration, SystemTime};
 // Time constants
 const SECONDS_PER_DAY: u64 = 24 * 3600;
 
-// Test file age constants (based on default bucket boundaries)
-const RECENT_FILE_AGE: u64 = 3; // current-week bucket (0-7 days)
-const MEDIUM_FILE_AGE: u64 = 15; // current-month bucket (15-30 days)
-const LAST_MONTHS_AGE: u64 = 50; // last-months bucket (31-180 days)
-const OLD_FILE_AGE: u64 = 200; // old-stuff bucket (181+ days)
+// An age (in days) that always lands in current-week regardless of the date.
+const RECENT_FILE_AGE: u64 = 0;
+// An age (in days) that always lands in old-stuff regardless of the date: older
+// than the first day of the previous month.
+const OLD_FILE_AGE: u64 = 200;
+
+// A pinned reference instant for deterministic calendar bucketing.
+// Wednesday 2026-06-17; the week starts Sunday 2026-06-14.
+const PINNED_NOW: &str = "2026-06-17T12:00:00Z";
 
 // Bucket path constants
 const REFILE_BASE: &str = "refile";
 const CURRENT_WEEK_BUCKET: &str = "refile/current-week";
+const LAST_WEEK_BUCKET: &str = "refile/last-week";
 const CURRENT_MONTH_BUCKET: &str = "refile/current-month";
-const LAST_MONTHS_BUCKET: &str = "refile/last-months";
+const LAST_MONTH_BUCKET: &str = "refile/last-month";
 const OLD_STUFF_BUCKET: &str = "refile/old-stuff";
 
-/// Helper to create a file with a specific age (days old)
+/// Helper to create a file with a specific age (days old).
 fn create_file_with_age(dir: &Path, name: &str, days_old: u64) -> std::io::Result<()> {
     let path = dir.join(name);
     std::fs::write(&path, b"test content")?;
@@ -48,35 +64,112 @@ fn create_file_with_age(dir: &Path, name: &str, days_old: u64) -> std::io::Resul
     Ok(())
 }
 
+/// Helper to create a file whose modification time is a specific absolute UTC instant.
+///
+/// Pairs with the `REFILE_NOW` env var to make calendar bucketing deterministic.
+fn create_file_on(dir: &Path, name: &str, rfc3339: &str) -> std::io::Result<()> {
+    let path = dir.join(name);
+    std::fs::write(&path, b"test content")?;
+
+    let mtime = chrono::DateTime::parse_from_rfc3339(rfc3339)
+        .expect("valid RFC 3339 timestamp")
+        .with_timezone(&chrono::Utc);
+    filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(mtime.into()))?;
+
+    Ok(())
+}
+
 /// Helper to create a refile command
 #[must_use]
 fn refile_cmd() -> Command {
     Command::new(env!("CARGO_BIN_EXE_refile"))
 }
 
-/// Tests basic file organization into age-based buckets.
+/// Tests that running with no arguments fails with a helpful message rather than a panic.
+#[test]
+fn test_no_arguments_fails_gracefully() {
+    refile_cmd()
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("source_dir"));
+}
+
+/// Tests that `config dump` prints the example configuration and exits successfully.
 ///
-/// Creates files with different ages and verifies they are moved to the correct
-/// bucket directories based on default configuration:
-/// - 3-day-old file → current-week/
-/// - 15-day-old file → current-month/
-/// - 200-day-old file → old-stuff/
+/// Guards against the subcommand dispatch regression where a required positional made
+/// every `config` subcommand fail with "`source_dir` required".
+#[test]
+fn test_config_dump_succeeds() {
+    refile_cmd()
+        .args(["config", "dump"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("[[default.buckets]]"));
+}
+
+/// Tests that `config path` reports the configuration file location and exits successfully.
+#[test]
+fn test_config_path_succeeds() {
+    refile_cmd()
+        .args(["config", "path"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Configuration file path:"));
+}
+
+/// Tests that `config init` writes a config that `config validate` then accepts.
 ///
-/// Also verifies that original files are removed from source directory after move.
+/// Exercises the example configuration through the real init/validate path (using an
+/// isolated `XDG_CONFIG_HOME`), confirming the ordered bucket schema round-trips.
+#[test]
+fn test_config_init_then_validate() {
+    let config_home = TempDir::new().expect("Failed to create temporary config dir");
+
+    refile_cmd()
+        .env("XDG_CONFIG_HOME", config_home.path())
+        .args(["config", "init"])
+        .assert()
+        .success();
+
+    refile_cmd()
+        .env("XDG_CONFIG_HOME", config_home.path())
+        .args(["config", "validate"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("current-week = current-week"));
+}
+
+/// Tests basic file organization into calendar buckets.
+///
+/// Pins the reference instant to Wednesday 2026-06-17 (`REFILE_NOW`) and creates one
+/// file per bucket with an absolute modification time, then verifies each lands in the
+/// correct bucket:
+/// - 2026-06-16 → current-week/  (this week)
+/// - 2026-06-10 → last-week/     (previous calendar week)
+/// - 2026-06-03 → current-month/ (this month, before last week)
+/// - 2026-05-15 → last-month/    (previous calendar month)
+/// - 2026-04-10 → old-stuff/     (older than the previous month)
+///
+/// Also verifies that original files are removed from the source directory after the move.
 #[test]
 fn test_basic_file_organization() {
     let temp_dir = TempDir::new().expect("Failed to create temporary directory");
     let source = temp_dir.path();
 
-    // Create files with different ages
-    create_file_with_age(source, "recent.txt", RECENT_FILE_AGE)
-        .expect("Failed to create recent.txt");
-    create_file_with_age(source, "medium.txt", MEDIUM_FILE_AGE)
-        .expect("Failed to create medium.txt");
-    create_file_with_age(source, "old.txt", OLD_FILE_AGE).expect("Failed to create old.txt");
+    create_file_on(source, "this-week.txt", "2026-06-16T08:00:00Z")
+        .expect("Failed to create this-week.txt");
+    create_file_on(source, "prev-week.txt", "2026-06-10T08:00:00Z")
+        .expect("Failed to create prev-week.txt");
+    create_file_on(source, "this-month.txt", "2026-06-03T08:00:00Z")
+        .expect("Failed to create this-month.txt");
+    create_file_on(source, "prev-month.txt", "2026-05-15T08:00:00Z")
+        .expect("Failed to create prev-month.txt");
+    create_file_on(source, "ancient.txt", "2026-04-10T08:00:00Z")
+        .expect("Failed to create ancient.txt");
 
-    // Run refile
+    // Run refile with a pinned "now"
     refile_cmd()
+        .env("REFILE_NOW", PINNED_NOW)
         .arg(source.to_str().expect("Test path contains invalid UTF-8"))
         .assert()
         .success();
@@ -86,25 +179,31 @@ fn test_basic_file_organization() {
         .child(REFILE_BASE)
         .assert(predicates::path::exists());
     temp_dir
-        .child(format!("{CURRENT_WEEK_BUCKET}/recent.txt"))
+        .child(format!("{CURRENT_WEEK_BUCKET}/this-week.txt"))
         .assert(predicates::path::exists());
     temp_dir
-        .child(format!("{CURRENT_MONTH_BUCKET}/medium.txt"))
+        .child(format!("{LAST_WEEK_BUCKET}/prev-week.txt"))
         .assert(predicates::path::exists());
     temp_dir
-        .child(format!("{OLD_STUFF_BUCKET}/old.txt"))
+        .child(format!("{CURRENT_MONTH_BUCKET}/this-month.txt"))
+        .assert(predicates::path::exists());
+    temp_dir
+        .child(format!("{LAST_MONTH_BUCKET}/prev-month.txt"))
+        .assert(predicates::path::exists());
+    temp_dir
+        .child(format!("{OLD_STUFF_BUCKET}/ancient.txt"))
         .assert(predicates::path::exists());
 
     // Original files should be gone
-    temp_dir
-        .child("recent.txt")
-        .assert(predicates::path::missing());
-    temp_dir
-        .child("medium.txt")
-        .assert(predicates::path::missing());
-    temp_dir
-        .child("old.txt")
-        .assert(predicates::path::missing());
+    for name in [
+        "this-week.txt",
+        "prev-week.txt",
+        "this-month.txt",
+        "prev-month.txt",
+        "ancient.txt",
+    ] {
+        temp_dir.child(name).assert(predicates::path::missing());
+    }
 }
 
 /// Tests dry-run mode provides safe preview capability without modifications.
@@ -122,7 +221,7 @@ fn test_dry_run_does_not_move_files() {
     let temp_dir = TempDir::new().expect("Failed to create temporary directory");
     let source = temp_dir.path();
 
-    create_file_with_age(source, "test.txt", 5).expect("Failed to create test.txt with age 5 days");
+    create_file_with_age(source, "test.txt", RECENT_FILE_AGE).expect("Failed to create test.txt");
 
     // Run refile with --dry-run
     refile_cmd()
@@ -162,7 +261,7 @@ fn test_conflict_without_rename_fails() {
     let temp_dir = TempDir::new().expect("Failed to create temporary directory");
     let source = temp_dir.path();
 
-    // Create two files with the same name but different ages
+    // Create two files with the same name; both age 0 so both map to current-week
     create_file_with_age(source, "file.txt", RECENT_FILE_AGE)
         .expect("Failed to create first file.txt");
 
@@ -173,8 +272,8 @@ fn test_conflict_without_rename_fails() {
         .success();
 
     // Create another file with same name
-    create_file_with_age(source, "file.txt", 5)
-        .expect("Failed to create second file.txt with age 5 days");
+    create_file_with_age(source, "file.txt", RECENT_FILE_AGE)
+        .expect("Failed to create second file.txt");
 
     // Try to refile again without --allow-rename, should fail
     refile_cmd()
@@ -208,8 +307,9 @@ fn test_allow_rename_handles_conflicts() {
         .assert()
         .success();
 
-    // Create conflicting file
-    create_file_with_age(source, "file.txt", 5).expect("Failed to create conflicting file.txt");
+    // Create conflicting file (same name, same current-week bucket)
+    create_file_with_age(source, "file.txt", RECENT_FILE_AGE)
+        .expect("Failed to create conflicting file.txt");
 
     // Run with --allow-rename
     refile_cmd()
@@ -283,43 +383,47 @@ fn test_custom_base_folder() {
         .assert(predicates::path::missing());
 }
 
-/// Tests custom bucket configuration.
+/// Tests custom bucket configuration via CLI.
 ///
-/// **User Story**: User wants to define their own age boundaries and bucket names
+/// **User Story**: User wants to define their own bucket names and calendar periods
 /// instead of using the default buckets.
 ///
-/// **Scenario**: Define custom buckets: today (≤1 day), week (≤7 days), old (everything else).
+/// **Scenario**: Define custom buckets: recent (current-week), monthly (current-month),
+/// archive (catch-all). Pin "now" so the mapping is deterministic.
 ///
-/// **Expected**: Files are categorized according to custom boundaries:
-/// - 0-day-old file → today/
-/// - 5-day-old file → week/
-/// - 30-day-old file → old/
+/// **Expected**: Files are categorized according to the custom buckets:
+/// - 2026-06-16 → recent/   (current week)
+/// - 2026-06-03 → monthly/  (this month, before current week)
+/// - 2026-04-10 → archive/  (catch-all)
 #[test]
 fn test_custom_buckets() {
     let temp_dir = TempDir::new().expect("Failed to create temporary directory");
     let source = temp_dir.path();
 
-    create_file_with_age(source, "today.txt", 0)
-        .expect("Failed to create today.txt with age 0 days");
-    create_file_with_age(source, "week.txt", 5).expect("Failed to create week.txt with age 5 days");
-    create_file_with_age(source, "old.txt", 30).expect("Failed to create old.txt with age 30 days");
+    create_file_on(source, "recent.txt", "2026-06-16T08:00:00Z")
+        .expect("Failed to create recent.txt");
+    create_file_on(source, "monthly.txt", "2026-06-03T08:00:00Z")
+        .expect("Failed to create monthly.txt");
+    create_file_on(source, "archive.txt", "2026-04-10T08:00:00Z")
+        .expect("Failed to create archive.txt");
 
     // Run with custom buckets
     refile_cmd()
+        .env("REFILE_NOW", PINNED_NOW)
         .arg("--buckets")
-        .arg("today=1,week=7,old=null")
+        .arg("recent=current-week,monthly=current-month,archive=null")
         .arg(source.to_str().expect("Test path contains invalid UTF-8"))
         .assert()
         .success();
 
     temp_dir
-        .child(format!("{REFILE_BASE}/today/today.txt"))
+        .child(format!("{REFILE_BASE}/recent/recent.txt"))
         .assert(predicates::path::exists());
     temp_dir
-        .child(format!("{REFILE_BASE}/week/week.txt"))
+        .child(format!("{REFILE_BASE}/monthly/monthly.txt"))
         .assert(predicates::path::exists());
     temp_dir
-        .child(format!("{REFILE_BASE}/old/old.txt"))
+        .child(format!("{REFILE_BASE}/archive/archive.txt"))
         .assert(predicates::path::exists());
 }
 
@@ -347,8 +451,8 @@ fn test_separate_target_directory() {
         .create_dir_all()
         .expect("Failed to create target directory");
 
-    create_file_with_age(source_dir.path(), "test.txt", 5)
-        .expect("Failed to create test.txt with age 5 days");
+    create_file_with_age(source_dir.path(), "test.txt", RECENT_FILE_AGE)
+        .expect("Failed to create test.txt");
 
     // Run with separate target directory
     refile_cmd()
@@ -450,7 +554,7 @@ fn test_empty_directory_handling() {
     fs::create_dir(&empty_dir).expect("Failed to create empty directory");
 
     // Make it old
-    let age = SystemTime::now() - Duration::from_secs(LAST_MONTHS_AGE * SECONDS_PER_DAY);
+    let age = SystemTime::now() - Duration::from_secs(OLD_FILE_AGE * SECONDS_PER_DAY);
     filetime::set_file_mtime(&empty_dir, filetime::FileTime::from_system_time(age))
         .expect("Failed to set mtime on empty directory");
 
@@ -462,7 +566,7 @@ fn test_empty_directory_handling() {
 
     // Empty directory should be moved
     temp_dir
-        .child(format!("{LAST_MONTHS_BUCKET}/empty"))
+        .child(format!("{OLD_STUFF_BUCKET}/empty"))
         .assert(predicates::path::is_dir());
     temp_dir.child("empty").assert(predicates::path::missing());
 }
@@ -473,13 +577,13 @@ fn test_empty_directory_handling() {
 /// moving them from recent buckets to older buckets over time.
 ///
 /// **Scenario**:
-/// 1. Create a recent file and refile it (goes to last-week)
-/// 2. Simulate time passing by changing the file's mtime
-/// 3. Refile again (should move to last-months)
+/// 1. Create a recent file and refile it (goes to current-week)
+/// 2. Simulate time passing by changing the file's mtime to be very old
+/// 3. Refile again (should move to old-stuff)
 ///
 /// **Expected**:
-/// - First run: file moves to last-week bucket
-/// - After aging: file moves from last-week to last-months bucket
+/// - First run: file moves to current-week bucket
+/// - After aging: file moves from current-week to old-stuff bucket
 /// - No data loss, file is moved (not copied)
 ///
 /// **Critical Property**: Demonstrates refile's ability to reorganize previously
@@ -499,13 +603,13 @@ fn test_repeated_refiling() {
         .success();
     assert!(source.join(CURRENT_WEEK_BUCKET).join("file.txt").exists());
 
-    // Make the file older (simulate time passing)
+    // Make the file very old (simulate time passing)
     let old_path = source.join(CURRENT_WEEK_BUCKET).join("file.txt");
-    let age = SystemTime::now() - Duration::from_secs(LAST_MONTHS_AGE * SECONDS_PER_DAY);
+    let age = SystemTime::now() - Duration::from_secs(OLD_FILE_AGE * SECONDS_PER_DAY);
     filetime::set_file_mtime(&old_path, filetime::FileTime::from_system_time(age))
         .expect("Failed to set mtime to simulate aging");
 
-    // Second run - file should move to different bucket
+    // Second run - file should move to a different bucket
     refile_cmd()
         .arg(source.to_str().expect("Test path contains invalid UTF-8"))
         .assert()
@@ -515,7 +619,7 @@ fn test_repeated_refiling() {
         "File still in current-week"
     );
     assert!(
-        source.join(LAST_MONTHS_BUCKET).join("file.txt").exists(),
-        "File not moved to last-months"
+        source.join(OLD_STUFF_BUCKET).join("file.txt").exists(),
+        "File not moved to old-stuff"
     );
 }

@@ -4,10 +4,10 @@
 //! computing paths, and other operations that don't interact with the filesystem.
 //! These functions are easier to test and reason about since they have no side effects.
 
-use crate::config::{BucketConfig, BucketDef};
+use crate::config::{Boundary, BucketConfig, BucketDef};
+use chrono::{DateTime, Datelike, Days, NaiveDate, TimeZone, Utc};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 /// Checks if a path is a protected directory that should not be moved.
 ///
@@ -51,37 +51,82 @@ pub fn is_protected_directory(path: &Path) -> bool {
     false
 }
 
-/// Determines which bucket a file belongs to based on its age.
+/// Determines which bucket a file belongs to based on its modification time.
 ///
-/// Iterates through bucket definitions and returns the first bucket
-/// whose `max_age_days` threshold is greater than or equal to the file's age.
+/// Buckets are evaluated in declaration order. Each non-catch-all bucket has a
+/// calendar *start instant* computed relative to `now`; the first bucket whose
+/// start instant is at or before `mtime` wins. The catch-all bucket matches
+/// anything older. Because the newest periods are listed first, this naturally
+/// resolves the overlaps that occur when, for example, the current week spans a
+/// month boundary.
 ///
 /// # Arguments
 ///
-/// * `age` - The duration since the file was last modified
+/// * `mtime` - The file's modification time (UTC)
+/// * `now` - The reference instant the calendar boundaries are computed from (UTC)
 /// * `bucket_config` - The bucket configuration to use
 ///
 /// # Returns
 ///
 /// A reference to the matching `BucketDef`, or the last bucket (catch-all) if none match.
 #[must_use]
-pub fn pick_bucket(age: Duration, bucket_config: &BucketConfig) -> &BucketDef {
-    let age_days = age.as_secs() / (24 * 3600);
-
+pub fn pick_bucket(
+    mtime: DateTime<Utc>,
+    now: DateTime<Utc>,
+    bucket_config: &BucketConfig,
+) -> &BucketDef {
     for bucket in bucket_config.buckets() {
-        if let Some(max_days) = bucket.max_age_days() {
-            if age_days <= max_days {
-                return bucket;
-            }
-        } else {
-            // This is a catch-all bucket (None age)
-            return bucket;
+        match bucket_start(bucket.boundary(), now) {
+            // Catch-all: matches everything older than the preceding buckets.
+            None => return bucket,
+            Some(start) if mtime >= start => return bucket,
+            Some(_) => {}
         }
     }
 
-    // Should never reach here if validation passed (ensures catch-all exists)
-    // Return last bucket as fallback
+    // Should never reach here if validation passed (ensures catch-all exists).
+    // Return last bucket as fallback.
     &bucket_config.buckets()[bucket_config.buckets().len() - 1]
+}
+
+/// Computes the start instant (inclusive) for a bucket's calendar period,
+/// relative to `now`. Returns `None` for the catch-all, which has no lower bound.
+fn bucket_start(boundary: &Boundary, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let today = now.date_naive();
+    let date = match boundary {
+        Boundary::CurrentWeek => start_of_week(today),
+        Boundary::LastWeek => start_of_week(today) - Days::new(7),
+        Boundary::CurrentMonth => first_of_month(today),
+        Boundary::LastMonth => first_of_previous_month(today),
+        Boundary::CatchAll => return None,
+    };
+    Some(start_of_day_utc(date))
+}
+
+/// Returns the most recent Sunday on or before `date` (week starts on Sunday).
+fn start_of_week(date: NaiveDate) -> NaiveDate {
+    let days_since_sunday = date.weekday().num_days_from_sunday();
+    date - Days::new(u64::from(days_since_sunday))
+}
+
+/// Returns the first day of `date`'s month.
+fn first_of_month(date: NaiveDate) -> NaiveDate {
+    date.with_day(1).expect("day 1 is valid for any month")
+}
+
+/// Returns the first day of the month preceding `date`'s month.
+fn first_of_previous_month(date: NaiveDate) -> NaiveDate {
+    let last_day_of_previous = first_of_month(date) - Days::new(1);
+    first_of_month(last_day_of_previous)
+}
+
+/// Converts a date to the instant at its start (00:00:00 UTC).
+fn start_of_day_utc(date: NaiveDate) -> DateTime<Utc> {
+    Utc.from_utc_datetime(
+        &date
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight is valid for any date"),
+    )
 }
 
 /// Computes the base refile directory path within the target directory.

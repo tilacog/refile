@@ -8,13 +8,12 @@ use crate::core::{generate_unique_name, is_bucket_dir};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
-/// Retrieves the age of a file based on its modification time.
+/// Retrieves a file's modification time.
 ///
-/// The age is calculated as the duration between now and the file's last
-/// modification time. Falls back to creation time if modification time is
-/// unavailable.
+/// Falls back to creation time if modification time is unavailable. The returned
+/// instant is compared against calendar boundaries by [`crate::core::pick_bucket`].
 ///
 /// # Arguments
 ///
@@ -22,27 +21,19 @@ use std::time::{Duration, SystemTime};
 ///
 /// # Returns
 ///
-/// `Ok(Duration)` representing the file's age, or an error if:
-/// - File metadata cannot be accessed
-/// - Neither modification nor creation time is available
-/// - File timestamp is in the future (possible clock skew)
+/// `Ok(SystemTime)` of the file's modification (or creation) time.
 ///
 /// # Errors
 ///
 /// Returns an error if the file metadata cannot be accessed (e.g., file doesn't exist,
-/// permission denied), or if file timestamps are unavailable or invalid.
-pub fn get_file_age(path: &Path) -> io::Result<Duration> {
+/// permission denied), or if neither modification nor creation time is available.
+pub fn get_file_mtime(path: &Path) -> io::Result<SystemTime> {
     let meta = fs::metadata(path)?;
 
     // Try modification time first, fall back to creation time
-    let timestamp = meta
-        .modified()
+    meta.modified()
         .or_else(|_| meta.created())
-        .map_err(|e| io::Error::other(format!("Cannot read file timestamp: {e}")))?;
-
-    let now = SystemTime::now();
-    now.duration_since(timestamp)
-        .map_err(|_| io::Error::other("File timestamp is in the future - check system clock"))
+        .map_err(|e| io::Error::other(format!("Cannot read file timestamp: {e}")))
 }
 
 /// Finds a unique destination path by trying numbered suffixes.
